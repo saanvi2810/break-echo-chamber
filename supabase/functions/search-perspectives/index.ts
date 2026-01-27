@@ -31,8 +31,16 @@ Deno.serve(async (req) => {
 
     console.log('Searching perspectives for topic:', topic);
 
+    const currentDate = new Date().toLocaleDateString('en-US', { 
+      year: 'numeric', 
+      month: 'long', 
+      day: 'numeric' 
+    });
+
     const systemPrompt = `You are a news analyst that provides balanced, multi-perspective coverage of current events. 
 For any topic, you must provide exactly 3 perspectives: progressive/left-leaning, centrist/balanced, and conservative/right-leaning.
+
+TODAY'S DATE IS: ${currentDate}
 
 IMPORTANT: You must respond with valid JSON only. No markdown, no code blocks, just raw JSON.
 
@@ -41,7 +49,7 @@ The JSON must follow this exact structure:
   "topic": {
     "title": "Brief topic title",
     "description": "One sentence description of the topic",
-    "date": "Current date in format: Month Day, Year",
+    "date": "${currentDate}",
     "tags": ["Tag1", "Tag2", "Tag3"]
   },
   "perspectives": [
