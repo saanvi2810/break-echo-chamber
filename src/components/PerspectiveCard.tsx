@@ -1,15 +1,4 @@
-import { ExternalLink, Clock, Quote } from "lucide-react";
-import { useState } from "react";
-import FactCheckOverlay from "./FactCheckOverlay";
-
-interface Claim {
-  text: string;
-  status: "verified" | "disputed" | "false" | "unverified";
-  source: string;
-  sourceUrl: string;
-  factCheckRating?: string;
-  factCheckTitle?: string;
-}
+import { ExternalLink, Clock } from "lucide-react";
 
 interface PerspectiveCardProps {
   perspective: "left" | "center" | "right";
@@ -19,7 +8,6 @@ interface PerspectiveCardProps {
   summary: string;
   imageUrl?: string;
   timeAgo: string;
-  claims: Claim[];
   articleUrl: string;
   animationDelay?: string;
 }
@@ -32,12 +20,9 @@ const PerspectiveCard = ({
   summary,
   imageUrl,
   timeAgo,
-  claims,
   articleUrl,
   animationDelay = "0s",
 }: PerspectiveCardProps) => {
-  const [showFactCheck, setShowFactCheck] = useState(false);
-
   const perspectiveStyles = {
     left: {
       border: "border-l-4 border-perspective-left",
@@ -92,21 +77,9 @@ const PerspectiveCard = ({
           {headline}
         </h3>
 
-        <p className="text-sm text-muted-foreground leading-relaxed mb-4 line-clamp-3">
+        <p className="text-sm text-muted-foreground leading-relaxed mb-4 line-clamp-4">
           {summary}
         </p>
-
-        {claims.length > 0 && (
-          <button
-            onClick={() => setShowFactCheck(!showFactCheck)}
-            className="flex items-center gap-2 text-xs font-medium text-fact-verified hover:underline mb-4 transition-colors"
-          >
-            <Quote className="w-3.5 h-3.5" />
-            <span>{claims.length} claims fact-checked</span>
-          </button>
-        )}
-
-        {showFactCheck && <FactCheckOverlay claims={claims} />}
 
         <a
           href={articleUrl}

@@ -1,14 +1,14 @@
 import { supabase } from '@/integrations/supabase/client';
 import { withRetry, getNetworkErrorMessage, isNetworkError } from '@/lib/utils/retry';
 
-export interface Claim {
-  text: string;
-  status: 'verified' | 'disputed' | 'false' | 'unverified';
+export interface FactCheck {
+  claimText: string;
+  claimant: string;
+  rating: string;
+  status: 'verified' | 'disputed' | 'false';
   source: string;
   sourceUrl: string;
-  factCheckRating?: string;
-  factCheckTitle?: string;
-  isRealFactCheck?: boolean;
+  title: string;
 }
 
 export interface Perspective {
@@ -18,7 +18,6 @@ export interface Perspective {
   headline: string;
   summary: string;
   timeAgo: string;
-  claims: Claim[];
   articleUrl: string;
 }
 
@@ -32,6 +31,7 @@ export interface TopicData {
 export interface PerspectivesResponse {
   topic: TopicData;
   perspectives: Perspective[];
+  factChecks: FactCheck[];
 }
 
 export interface SearchResult {
