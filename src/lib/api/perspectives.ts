@@ -1,4 +1,5 @@
 import { supabase } from '@/integrations/supabase/client';
+import { withRetry, getNetworkErrorMessage, isNetworkError } from '@/lib/utils/retry';
 
 export interface Claim {
   text: string;
@@ -30,19 +31,58 @@ export interface PerspectivesResponse {
   perspectives: Perspective[];
 }
 
-export async function searchPerspectives(topic: string): Promise<PerspectivesResponse> {
-  const { data, error } = await supabase.functions.invoke('search-perspectives', {
-    body: { topic },
-  });
+export interface SearchResult {
+  data?: PerspectivesResponse;
+  error?: string;
+  isNetworkError?: boolean;
+  retryCount?: number;
+}
 
-  if (error) {
-    console.error('Error fetching perspectives:', error);
-    throw new Error(error.message || 'Failed to fetch perspectives');
+export async function searchPerspectives(
+  topic: string,
+  onRetry?: (attempt: number) => void
+): Promise<SearchResult> {
+  let retryCount = 0;
+
+  try {
+    const result = await withRetry(
+      async () => {
+        const { data, error } = await supabase.functions.invoke('search-perspectives', {
+          body: { topic },
+        });
+
+        if (error) {
+          console.error('Error fetching perspectives:', error);
+          throw new Error(error.message || 'Failed to fetch perspectives');
+        }
+
+        if (!data.success) {
+          throw new Error(data.error || 'Failed to analyze topic');
+        }
+
+        return data.data as PerspectivesResponse;
+      },
+      {
+        maxRetries: 3,
+        baseDelay: 1000,
+        maxDelay: 8000,
+        onRetry: (attempt, error) => {
+          retryCount = attempt;
+          console.log(`Retry attempt ${attempt} after error:`, error.message);
+          onRetry?.(attempt);
+        },
+      }
+    );
+
+    return { data: result, retryCount };
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    const networkError = isNetworkError(err);
+    
+    return {
+      error: networkError ? getNetworkErrorMessage(err) : err.message,
+      isNetworkError: networkError,
+      retryCount,
+    };
   }
-
-  if (!data.success) {
-    throw new Error(data.error || 'Failed to analyze topic');
-  }
-
-  return data.data;
 }
