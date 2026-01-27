@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useToast } from "@/hooks/use-toast";
 import TopicSearch from "./TopicSearch";
 import TrendingTopicDisplay from "./TrendingTopicDisplay";
@@ -9,6 +9,10 @@ const TrendingTopic = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [currentTopic, setCurrentTopic] = useState<TopicData | null>(null);
   const [perspectives, setPerspectives] = useState<Perspective[] | null>(null);
+  const [retryAttempt, setRetryAttempt] = useState(0);
+  const [lastSearchTopic, setLastSearchTopic] = useState("");
+  const [searchError, setSearchError] = useState<string | undefined>();
+  const [isNetworkError, setIsNetworkError] = useState(false);
 
   // Default demo data
   const defaultTopic: TopicData = {
@@ -90,27 +94,47 @@ const TrendingTopic = () => {
     },
   ];
 
-  const handleSearch = async (topic: string) => {
+  const handleSearch = useCallback(async (topic: string) => {
     setIsLoading(true);
-    try {
-      const result = await searchPerspectives(topic);
-      setCurrentTopic(result.topic);
-      setPerspectives(result.perspectives);
+    setRetryAttempt(0);
+    setSearchError(undefined);
+    setIsNetworkError(false);
+    setLastSearchTopic(topic);
+
+    const result = await searchPerspectives(topic, (attempt) => {
+      setRetryAttempt(attempt);
+    });
+
+    setIsLoading(false);
+    setRetryAttempt(0);
+
+    if (result.error) {
+      setSearchError(result.error);
+      setIsNetworkError(result.isNetworkError || false);
+      
+      if (result.retryCount && result.retryCount > 0) {
+        toast({
+          title: "Search Failed",
+          description: `Failed after ${result.retryCount + 1} attempts. ${result.error}`,
+          variant: "destructive",
+        });
+      }
+    } else if (result.data) {
+      setCurrentTopic(result.data.topic);
+      setPerspectives(result.data.perspectives);
+      setSearchError(undefined);
       toast({
         title: "Analysis Complete",
-        description: `Found perspectives on "${result.topic.title}"`,
+        description: `Found perspectives on "${result.data.topic.title}"`,
       });
-    } catch (error) {
-      console.error('Search error:', error);
-      toast({
-        title: "Search Failed",
-        description: error instanceof Error ? error.message : "Failed to analyze topic. Please try again.",
-        variant: "destructive",
-      });
-    } finally {
-      setIsLoading(false);
     }
-  };
+  }, [toast]);
+
+  const handleRetry = useCallback(() => {
+    if (lastSearchTopic) {
+      handleSearch(lastSearchTopic);
+    }
+  }, [lastSearchTopic, handleSearch]);
 
   const displayTopic = currentTopic || defaultTopic;
   const displayPerspectives = perspectives || defaultPerspectives;
@@ -123,7 +147,14 @@ const TrendingTopic = () => {
           <h2 className="font-serif text-2xl md:text-3xl font-bold text-center mb-6">
             Explore Any Topic
           </h2>
-          <TopicSearch onSearch={handleSearch} isLoading={isLoading} />
+          <TopicSearch 
+            onSearch={handleSearch} 
+            isLoading={isLoading}
+            retryAttempt={retryAttempt}
+            error={searchError}
+            isNetworkError={isNetworkError}
+            onRetry={lastSearchTopic ? handleRetry : undefined}
+          />
         </div>
 
         {/* Topic Display */}

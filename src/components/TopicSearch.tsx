@@ -1,14 +1,25 @@
 import { useState } from "react";
-import { Search, Loader2 } from "lucide-react";
+import { Search, Loader2, WifiOff, RefreshCw } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
 interface TopicSearchProps {
   onSearch: (topic: string) => void;
   isLoading: boolean;
+  retryAttempt?: number;
+  error?: string;
+  isNetworkError?: boolean;
+  onRetry?: () => void;
 }
 
-const TopicSearch = ({ onSearch, isLoading }: TopicSearchProps) => {
+const TopicSearch = ({ 
+  onSearch, 
+  isLoading, 
+  retryAttempt = 0, 
+  error,
+  isNetworkError,
+  onRetry 
+}: TopicSearchProps) => {
   const [searchTerm, setSearchTerm] = useState("");
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -25,6 +36,13 @@ const TopicSearch = ({ onSearch, isLoading }: TopicSearchProps) => {
     "Tech Regulation",
     "Economic Outlook",
   ];
+
+  const getLoadingText = () => {
+    if (retryAttempt > 0) {
+      return `Retrying... (attempt ${retryAttempt + 1})`;
+    }
+    return "Analyzing...";
+  };
 
   return (
     <div className="w-full max-w-2xl mx-auto">
@@ -44,13 +62,41 @@ const TopicSearch = ({ onSearch, isLoading }: TopicSearchProps) => {
           {isLoading ? (
             <>
               <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              Analyzing...
+              {getLoadingText()}
             </>
           ) : (
             "Search"
           )}
         </Button>
       </form>
+
+      {/* Error Display */}
+      {error && !isLoading && (
+        <div className={`mt-4 p-4 rounded-lg border ${isNetworkError ? 'bg-orange-50 border-orange-200 dark:bg-orange-950/20 dark:border-orange-800' : 'bg-destructive/10 border-destructive/20'}`}>
+          <div className="flex items-start gap-3">
+            {isNetworkError && <WifiOff className="w-5 h-5 text-orange-600 dark:text-orange-400 mt-0.5 flex-shrink-0" />}
+            <div className="flex-1">
+              <p className={`text-sm font-medium ${isNetworkError ? 'text-orange-800 dark:text-orange-200' : 'text-destructive'}`}>
+                {isNetworkError ? "Connection Issue" : "Search Failed"}
+              </p>
+              <p className={`text-sm mt-1 ${isNetworkError ? 'text-orange-700 dark:text-orange-300' : 'text-destructive/80'}`}>
+                {error}
+              </p>
+            </div>
+            {onRetry && (
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={onRetry}
+                className="flex-shrink-0"
+              >
+                <RefreshCw className="w-4 h-4 mr-1" />
+                Retry
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="mt-4 flex flex-wrap gap-2 justify-center">
         <span className="text-sm text-muted-foreground">Try:</span>
