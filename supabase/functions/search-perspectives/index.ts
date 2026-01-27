@@ -63,76 +63,107 @@ function detectBias(outlet: string, url: string): 'left' | 'center' | 'right' {
 }
 
 async function searchNews(topic: string, perplexityKey: string): Promise<NewsArticle[]> {
-  console.log('Searching news with Perplexity for:', topic);
-  
-  const response = await fetch('https://api.perplexity.ai/chat/completions', {
+  console.log('Searching news with Perplexity Search API for:', topic);
+
+  // Use Perplexity Search endpoint (returns real URLs directly; avoids LLM hallucinating URLs)
+  const response = await fetch('https://api.perplexity.ai/search', {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${perplexityKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: 'sonar',
-      messages: [
-        {
-          role: 'system',
-          content: 'You are a news search assistant. Find recent news articles about the given topic from diverse sources across the political spectrum. Return ONLY a JSON array of articles with url, title, and outlet fields. No other text.'
-        },
-        {
-          role: 'user',
-          content: `Find 6-9 recent news articles about: "${topic}". Include sources from left-leaning (MSNBC, Guardian, HuffPost), center (Reuters, AP, BBC), and right-leaning (Fox News, WSJ, Daily Wire) outlets. Return as JSON array: [{"url": "...", "title": "...", "outlet": "..."}]`
-        }
-      ],
-      search_recency_filter: 'week',
+      query: `${topic} site:reuters.com OR site:apnews.com OR site:bbc.com OR site:theguardian.com OR site:msnbc.com OR site:huffpost.com OR site:foxnews.com OR site:wsj.com OR site:dailywire.com`,
     }),
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error('Perplexity search error:', errorText);
+    console.error('Perplexity /search error:', errorText);
     throw new Error('Failed to search news');
   }
 
   const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || '';
-  const citations = data.citations || [];
-  
-  console.log('Perplexity response received, citations:', citations.length);
-  
-  // Parse the JSON response from Perplexity
-  let articles: NewsArticle[] = [];
-  
-  try {
-    const jsonMatch = content.match(/\[[\s\S]*\]/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
-      articles = parsed.map((item: any) => ({
-        url: item.url,
-        title: item.title,
-        outlet: item.outlet || detectOutletFromUrl(item.url),
-        snippet: item.snippet || '',
-        bias: detectBias(item.outlet || '', item.url),
-      }));
-    }
-  } catch (e) {
-    console.log('Failed to parse Perplexity JSON, using citations instead');
-  }
-  
-  // If we couldn't parse JSON, use citations directly
-  if (articles.length === 0 && citations.length > 0) {
-    articles = citations.slice(0, 9).map((url: string) => {
-      const outlet = detectOutletFromUrl(url);
+
+  // Best-effort extraction across possible response shapes
+  const results: any[] =
+    data?.results ||
+    data?.data ||
+    data?.items ||
+    (Array.isArray(data) ? data : []);
+
+  const articles: NewsArticle[] = results
+    .map((r: any) => {
+      const url = r.url || r.link || r.sourceURL;
+      const title = r.title || r.name || r.headline || '';
+      const snippet = r.snippet || r.description || r.summary || '';
+      if (!url || typeof url !== 'string') return null;
+
+      const outlet = r.outlet || detectOutletFromUrl(url);
       return {
         url,
-        title: `Article from ${outlet}`,
+        title: title || `Article from ${outlet}`,
         outlet,
-        snippet: '',
+        snippet,
         bias: detectBias(outlet, url),
-      };
-    });
-  }
-  
-  return articles;
+      } as NewsArticle;
+    })
+    .filter(Boolean) as NewsArticle[];
+
+  console.log('Perplexity /search returned articles:', articles.length);
+  return articles.slice(0, 12);
+}
+
+function pickByBias(articles: NewsArticle[], bias: 'left' | 'center' | 'right'): NewsArticle | undefined {
+  const candidates = articles.filter((a) => a.bias === bias);
+  return candidates[0] || articles[0];
+}
+
+function enforceRealUrls(parsedContent: any, realArticles: NewsArticle[]) {
+  if (!parsedContent?.perspectives || !Array.isArray(parsedContent.perspectives) || realArticles.length === 0) return;
+
+  const allowedUrls = new Set(realArticles.map((a) => a.url));
+  const left = pickByBias(realArticles, 'left');
+  const center = pickByBias(realArticles, 'center');
+  const right = pickByBias(realArticles, 'right');
+
+  const fallbackFor = (p: any): NewsArticle | undefined => {
+    if (p?.perspective === 'left') return left;
+    if (p?.perspective === 'center') return center;
+    if (p?.perspective === 'right') return right;
+    return realArticles[0];
+  };
+
+  parsedContent.perspectives.forEach((p: any) => {
+    const chosen = fallbackFor(p);
+    if (!chosen) return;
+
+    // Enforce articleUrl
+    if (!p.articleUrl || typeof p.articleUrl !== 'string' || !allowedUrls.has(p.articleUrl)) {
+      p.articleUrl = chosen.url;
+    }
+
+    // Enforce outlet/headline when missing (or clearly placeholder)
+    if (!p.outlet || typeof p.outlet !== 'string' || p.outlet.toLowerCase().includes('example')) {
+      p.outlet = chosen.outlet;
+    }
+    if (!p.headline || typeof p.headline !== 'string' || p.headline.toLowerCase().includes('realistic headline')) {
+      p.headline = chosen.title;
+    }
+
+    // If claim source URLs are clearly fake, try to replace with the article URL.
+    if (Array.isArray(p.claims)) {
+      p.claims.forEach((c: any) => {
+        if (!c || typeof c !== 'object') return;
+        const u = c.sourceUrl;
+        const isProbablyFake = typeof u !== 'string' || !u.startsWith('http') || u.includes('example.com');
+        if (isProbablyFake) {
+          c.sourceUrl = chosen.url;
+          if (!c.source || typeof c.source !== 'string') c.source = chosen.outlet;
+        }
+      });
+    }
+  });
 }
 
 Deno.serve(async (req) => {
@@ -181,11 +212,12 @@ Deno.serve(async (req) => {
       day: 'numeric' 
     });
 
-    // Build article context for the AI
-    const articleContext = realArticles.length > 0 
-      ? `\n\nREAL ARTICLES FOUND (use these exact URLs and headlines):\n${realArticles.map(a => 
-          `- [${a.bias?.toUpperCase() || 'UNKNOWN'}] ${a.outlet}: "${a.title}" - ${a.url}`
-        ).join('\n')}`
+    // Build strict URL list for the AI (we'll also enforce after parsing)
+    const articleContext = realArticles.length > 0
+      ? `\n\nREAL ARTICLES (ONLY use these exact URLs):\n${realArticles
+          .slice(0, 12)
+          .map((a) => `- [${(a.bias || 'center').toUpperCase()}] ${a.outlet}: ${a.title} :: ${a.url}`)
+          .join('\n')}`
       : '';
 
     const systemPrompt = `You are a news analyst that provides balanced, multi-perspective coverage of current events. 
@@ -195,7 +227,7 @@ TODAY'S DATE IS: ${currentDate}
 ${articleContext}
 
 IMPORTANT: You must respond with valid JSON only. No markdown, no code blocks, just raw JSON.
-${realArticles.length > 0 ? 'CRITICAL: Use the REAL ARTICLE URLs provided above. Match each perspective to actual articles from matching outlets.' : ''}
+${realArticles.length > 0 ? 'CRITICAL: You MUST choose articleUrl and any sourceUrl ONLY from the REAL ARTICLES list above. Never invent URLs.' : ''}
 
 The JSON must follow this exact structure:
 {
@@ -299,6 +331,9 @@ Include 1-2 fact-checkable claims per perspective with realistic verification st
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
+
+    // Enforce real URLs (prevents hallucinated/fake links)
+    enforceRealUrls(parsedContent, realArticles);
 
     // Extract all claims from perspectives for fact-checking
     const allClaims: string[] = [];
