@@ -150,6 +150,92 @@ Include 1-2 fact-checkable claims per perspective with realistic verification st
       );
     }
 
+    // Extract all claims from perspectives for fact-checking
+    const allClaims: string[] = [];
+    const claimMap: Map<string, { perspectiveIndex: number; claimIndex: number }> = new Map();
+    
+    if (parsedContent.perspectives) {
+      parsedContent.perspectives.forEach((perspective: any, pIndex: number) => {
+        if (perspective.claims && Array.isArray(perspective.claims)) {
+          perspective.claims.forEach((claim: any, cIndex: number) => {
+            if (claim.text) {
+              allClaims.push(claim.text);
+              claimMap.set(claim.text, { perspectiveIndex: pIndex, claimIndex: cIndex });
+            }
+          });
+        }
+      });
+    }
+
+    // Fact-check claims using Google Fact Check API
+    if (allClaims.length > 0) {
+      console.log(`Fact-checking ${allClaims.length} claims`);
+      
+      const factCheckApiKey = Deno.env.get('GOOGLE_FACT_CHECK_API_KEY');
+      
+      if (factCheckApiKey) {
+        try {
+          const factCheckResults = await Promise.all(
+            allClaims.map(async (claimText: string) => {
+              try {
+                const searchQuery = encodeURIComponent(claimText.slice(0, 200));
+                const fcResponse = await fetch(
+                  `https://factchecktools.googleapis.com/v1alpha1/claims:search?query=${searchQuery}&key=${factCheckApiKey}&languageCode=en`,
+                  { method: 'GET' }
+                );
+                
+                if (!fcResponse.ok) {
+                  return { claimText, factChecks: [] };
+                }
+                
+                const fcData = await fcResponse.json();
+                return { claimText, factChecks: fcData.claims || [] };
+              } catch {
+                return { claimText, factChecks: [] };
+              }
+            })
+          );
+
+          // Update claims with real fact-check data
+          factCheckResults.forEach(({ claimText, factChecks }) => {
+            const location = claimMap.get(claimText);
+            if (location && factChecks.length > 0) {
+              const claim = parsedContent.perspectives[location.perspectiveIndex].claims[location.claimIndex];
+              const firstCheck = factChecks[0];
+              const firstReview = firstCheck.claimReview?.[0];
+              
+              if (firstReview) {
+                // Determine status from rating
+                const rating = (firstReview.textualRating || '').toLowerCase();
+                let status = 'disputed';
+                
+                if (rating.includes('true') || rating.includes('correct') || rating.includes('accurate')) {
+                  status = 'verified';
+                } else if (rating.includes('false') || rating.includes('wrong') || rating.includes('pants on fire')) {
+                  status = 'false';
+                } else if (rating.includes('mixed') || rating.includes('partly') || rating.includes('misleading')) {
+                  status = 'disputed';
+                }
+                
+                claim.status = status;
+                claim.source = firstReview.publisher?.name || claim.source;
+                claim.sourceUrl = firstReview.url || claim.sourceUrl;
+                claim.factCheckRating = firstReview.textualRating;
+                claim.factCheckTitle = firstReview.title;
+              }
+            }
+          });
+
+          console.log('Fact-checking complete');
+        } catch (fcError) {
+          console.error('Fact-check error:', fcError);
+          // Continue without fact-checking if it fails
+        }
+      } else {
+        console.log('Google Fact Check API key not configured, skipping verification');
+      }
+    }
+
     console.log('Successfully analyzed topic');
 
     return new Response(

@@ -3,9 +3,11 @@ import { withRetry, getNetworkErrorMessage, isNetworkError } from '@/lib/utils/r
 
 export interface Claim {
   text: string;
-  status: 'verified' | 'disputed' | 'false';
+  status: 'verified' | 'disputed' | 'false' | 'unverified';
   source: string;
   sourceUrl: string;
+  factCheckRating?: string;
+  factCheckTitle?: string;
 }
 
 export interface Perspective {
