@@ -112,7 +112,7 @@ const FactCheckOverlay = ({ claims }: FactCheckOverlayProps) => {
                 "{claim.text}"
               </p>
               <span className="text-xs text-gray-500">
-                Not yet fact-checked by independent sources
+                Pending verification
               </span>
             </div>
           </div>
@@ -121,13 +121,7 @@ const FactCheckOverlay = ({ claims }: FactCheckOverlayProps) => {
       
       {realFactChecks.length > 0 && (
         <p className="text-[10px] text-muted-foreground text-center mt-2">
-          Fact-checks powered by Google Fact Check Tools API
-        </p>
-      )}
-      
-      {realFactChecks.length === 0 && unverifiedClaims.length > 0 && (
-        <p className="text-[10px] text-muted-foreground text-center mt-2">
-          No independent fact-checks found for these claims
+          Verified by independent fact-checkers via Google Fact Check API
         </p>
       )}
     </div>
