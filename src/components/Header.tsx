@@ -1,4 +1,4 @@
-import { Layers, Info } from "lucide-react";
+import { Layers } from "lucide-react";
 
 const Header = () => {
   return (
@@ -17,11 +17,6 @@ const Header = () => {
             </p>
           </div>
         </div>
-        
-        <button className="flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary hover:bg-accent transition-colors text-sm font-medium">
-          <Info className="w-4 h-4" />
-          <span className="hidden sm:inline">How it works</span>
-        </button>
       </div>
     </header>
   );
