@@ -386,6 +386,7 @@ Include 1-2 fact-checkable claims per perspective with realistic verification st
     }
 
     // Fact-check claims using Google Fact Check API
+    // Also search for topic-level fact-checks to increase hit rate
     if (allClaims.length > 0) {
       console.log(`Fact-checking ${allClaims.length} claims`);
       
@@ -393,6 +394,26 @@ Include 1-2 fact-checkable claims per perspective with realistic verification st
       
       if (factCheckApiKey) {
         try {
+          // First, search for topic-level fact-checks
+          const topicQuery = encodeURIComponent(topic.slice(0, 100));
+          const topicFcResponse = await fetch(
+            `https://factchecktools.googleapis.com/v1alpha1/claims:search?query=${topicQuery}&key=${factCheckApiKey}&languageCode=en`,
+            { method: 'GET' }
+          );
+          
+          let topicFactChecks: any[] = [];
+          if (topicFcResponse.ok) {
+            const topicFcData = await topicFcResponse.json();
+            topicFactChecks = topicFcData.claims || [];
+            console.log(`Topic-level fact-checks found: ${topicFactChecks.length}`);
+            if (topicFactChecks.length > 0) {
+              console.log(`First topic fact-check: ${JSON.stringify(topicFactChecks[0]?.claimReview?.[0]?.publisher?.name)}`);
+            }
+          } else {
+            const errorText = await topicFcResponse.text();
+            console.log(`Topic fact-check API error (${topicFcResponse.status}): ${errorText.slice(0, 200)}`);
+          }
+
           const factCheckResults = await Promise.all(
             allClaims.map(async (claimText: string) => {
               try {
@@ -403,30 +424,40 @@ Include 1-2 fact-checkable claims per perspective with realistic verification st
                 );
                 
                 if (!fcResponse.ok) {
+                  const errText = await fcResponse.text();
+                  console.log(`Fact-check API error (${fcResponse.status}) for "${claimText.slice(0, 30)}...": ${errText.slice(0, 100)}`);
                   return { claimText, factChecks: [] };
                 }
                 
                 const fcData = await fcResponse.json();
-                return { claimText, factChecks: fcData.claims || [] };
-              } catch {
+                const results = fcData.claims || [];
+                console.log(`Claim "${claimText.slice(0, 40)}..." - found ${results.length} fact-checks`);
+                return { claimText, factChecks: results };
+              } catch (e) {
+                console.log(`Fact-check error for claim: ${e}`);
                 return { claimText, factChecks: [] };
               }
             })
           );
 
-          // Update claims with real fact-check data and mark which are verified by real fact-checkers
+          // Update claims with real fact-check data
+          let matchedCount = 0;
           factCheckResults.forEach(({ claimText, factChecks }) => {
             const location = claimMap.get(claimText);
             if (location) {
               const claim = parsedContent.perspectives[location.perspectiveIndex].claims[location.claimIndex];
               
-              if (factChecks.length > 0) {
-                const firstCheck = factChecks[0];
+              // Use claim-specific fact-checks, or fall back to topic-level if available
+              const relevantChecks = factChecks.length > 0 ? factChecks : topicFactChecks;
+              
+              if (relevantChecks.length > 0) {
+                const firstCheck = relevantChecks[0];
                 const firstReview = firstCheck.claimReview?.[0];
                 
                 if (firstReview) {
+                  matchedCount++;
                   const rating = (firstReview.textualRating || '').toLowerCase();
-                  let status = 'disputed';
+                  let status: string = 'disputed';
                   
                   if (rating.includes('true') || rating.includes('correct') || rating.includes('accurate')) {
                     status = 'verified';
@@ -441,10 +472,10 @@ Include 1-2 fact-checkable claims per perspective with realistic verification st
                   claim.sourceUrl = firstReview.url || '';
                   claim.factCheckRating = firstReview.textualRating;
                   claim.factCheckTitle = firstReview.title;
-                  claim.isRealFactCheck = true; // Mark as verified by real fact-checker
+                  claim.isRealFactCheck = true;
                 }
               } else {
-                // No fact-check found - mark as unverified (AI-generated status)
+                // No fact-check found - mark as unverified
                 claim.status = 'unverified';
                 claim.source = 'Not yet fact-checked';
                 claim.sourceUrl = '';
@@ -453,7 +484,7 @@ Include 1-2 fact-checkable claims per perspective with realistic verification st
             }
           });
 
-          console.log('Fact-checking complete');
+          console.log(`Fact-checking complete: ${matchedCount}/${allClaims.length} claims matched`);
         } catch (fcError) {
           console.error('Fact-check error:', fcError);
         }
