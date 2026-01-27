@@ -6,6 +6,135 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
+interface PerplexityResult {
+  url: string;
+  title: string;
+  snippet: string;
+}
+
+interface NewsArticle {
+  url: string;
+  title: string;
+  outlet: string;
+  snippet: string;
+  bias?: 'left' | 'center' | 'right';
+}
+
+// Known outlet bias mapping
+const outletBias: Record<string, 'left' | 'center' | 'right'> = {
+  // Left-leaning
+  'msnbc': 'left', 'huffpost': 'left', 'huffington post': 'left', 'the guardian': 'left',
+  'vox': 'left', 'slate': 'left', 'daily beast': 'left', 'mother jones': 'left',
+  'the atlantic': 'left', 'new york times': 'left', 'washington post': 'left',
+  'cnn': 'left', 'nbc news': 'left', 'abc news': 'left', 'cbs news': 'left',
+  'npr': 'left', 'politico': 'left', 'buzzfeed': 'left',
+  // Center
+  'reuters': 'center', 'ap news': 'center', 'associated press': 'center',
+  'bbc': 'center', 'pbs': 'center', 'usa today': 'center', 'axios': 'center',
+  'the hill': 'center', 'newsweek': 'center', 'time': 'center',
+  // Right-leaning
+  'fox news': 'right', 'wall street journal': 'right', 'wsj': 'right',
+  'new york post': 'right', 'daily wire': 'right', 'breitbart': 'right',
+  'the blaze': 'right', 'daily caller': 'right', 'washington examiner': 'right',
+  'national review': 'right', 'the federalist': 'right', 'newsmax': 'right',
+  'one america news': 'right', 'oan': 'right', 'epoch times': 'right',
+};
+
+function detectOutletFromUrl(url: string): string {
+  try {
+    const hostname = new URL(url).hostname.replace('www.', '');
+    const parts = hostname.split('.');
+    return parts.slice(0, -1).join(' ').replace(/-/g, ' ');
+  } catch {
+    return 'Unknown Source';
+  }
+}
+
+function detectBias(outlet: string, url: string): 'left' | 'center' | 'right' {
+  const lowerOutlet = outlet.toLowerCase();
+  const lowerUrl = url.toLowerCase();
+  
+  for (const [name, bias] of Object.entries(outletBias)) {
+    if (lowerOutlet.includes(name) || lowerUrl.includes(name.replace(/\s+/g, ''))) {
+      return bias;
+    }
+  }
+  return 'center';
+}
+
+async function searchNews(topic: string, perplexityKey: string): Promise<NewsArticle[]> {
+  console.log('Searching news with Perplexity for:', topic);
+  
+  const response = await fetch('https://api.perplexity.ai/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${perplexityKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'sonar',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a news search assistant. Find recent news articles about the given topic from diverse sources across the political spectrum. Return ONLY a JSON array of articles with url, title, and outlet fields. No other text.'
+        },
+        {
+          role: 'user',
+          content: `Find 6-9 recent news articles about: "${topic}". Include sources from left-leaning (MSNBC, Guardian, HuffPost), center (Reuters, AP, BBC), and right-leaning (Fox News, WSJ, Daily Wire) outlets. Return as JSON array: [{"url": "...", "title": "...", "outlet": "..."}]`
+        }
+      ],
+      search_recency_filter: 'week',
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Perplexity search error:', errorText);
+    throw new Error('Failed to search news');
+  }
+
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content || '';
+  const citations = data.citations || [];
+  
+  console.log('Perplexity response received, citations:', citations.length);
+  
+  // Parse the JSON response from Perplexity
+  let articles: NewsArticle[] = [];
+  
+  try {
+    const jsonMatch = content.match(/\[[\s\S]*\]/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      articles = parsed.map((item: any) => ({
+        url: item.url,
+        title: item.title,
+        outlet: item.outlet || detectOutletFromUrl(item.url),
+        snippet: item.snippet || '',
+        bias: detectBias(item.outlet || '', item.url),
+      }));
+    }
+  } catch (e) {
+    console.log('Failed to parse Perplexity JSON, using citations instead');
+  }
+  
+  // If we couldn't parse JSON, use citations directly
+  if (articles.length === 0 && citations.length > 0) {
+    articles = citations.slice(0, 9).map((url: string) => {
+      const outlet = detectOutletFromUrl(url);
+      return {
+        url,
+        title: `Article from ${outlet}`,
+        outlet,
+        snippet: '',
+        bias: detectBias(outlet, url),
+      };
+    });
+  }
+  
+  return articles;
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -22,6 +151,8 @@ Deno.serve(async (req) => {
     }
 
     const apiKey = Deno.env.get('LOVABLE_API_KEY');
+    const perplexityKey = Deno.env.get('PERPLEXITY_API_KEY');
+    
     if (!apiKey) {
       return new Response(
         JSON.stringify({ error: 'AI service not configured' }),
@@ -31,18 +162,40 @@ Deno.serve(async (req) => {
 
     console.log('Searching perspectives for topic:', topic);
 
+    // Search for real news articles using Perplexity
+    let realArticles: NewsArticle[] = [];
+    if (perplexityKey) {
+      try {
+        realArticles = await searchNews(topic, perplexityKey);
+        console.log(`Found ${realArticles.length} real articles`);
+      } catch (e) {
+        console.error('Perplexity search failed:', e);
+      }
+    } else {
+      console.log('Perplexity API key not configured, skipping real article search');
+    }
+
     const currentDate = new Date().toLocaleDateString('en-US', { 
       year: 'numeric', 
       month: 'long', 
       day: 'numeric' 
     });
 
+    // Build article context for the AI
+    const articleContext = realArticles.length > 0 
+      ? `\n\nREAL ARTICLES FOUND (use these exact URLs and headlines):\n${realArticles.map(a => 
+          `- [${a.bias?.toUpperCase() || 'UNKNOWN'}] ${a.outlet}: "${a.title}" - ${a.url}`
+        ).join('\n')}`
+      : '';
+
     const systemPrompt = `You are a news analyst that provides balanced, multi-perspective coverage of current events. 
 For any topic, you must provide exactly 3 perspectives: progressive/left-leaning, centrist/balanced, and conservative/right-leaning.
 
 TODAY'S DATE IS: ${currentDate}
+${articleContext}
 
 IMPORTANT: You must respond with valid JSON only. No markdown, no code blocks, just raw JSON.
+${realArticles.length > 0 ? 'CRITICAL: Use the REAL ARTICLE URLs provided above. Match each perspective to actual articles from matching outlets.' : ''}
 
 The JSON must follow this exact structure:
 {
@@ -56,45 +209,43 @@ The JSON must follow this exact structure:
     {
       "perspective": "left",
       "label": "Progressive View",
-      "outlet": "Name of a real left-leaning outlet",
-      "headline": "A realistic headline from this perspective",
-      "summary": "2-3 sentence summary of how this perspective covers the story",
-      "timeAgo": "X hours ago",
+      "outlet": "Name of the actual outlet",
+      "headline": "The actual headline from the article",
+      "summary": "2-3 sentence summary based on the actual article content",
+      "timeAgo": "Recently",
       "claims": [
         {
-          "text": "A specific factual claim made",
+          "text": "A specific factual claim from the article",
           "status": "verified OR disputed OR false",
-          "source": "Source that verifies/disputes this",
+          "source": "Fact-check source",
           "sourceUrl": "https://example.com"
         }
       ],
-      "articleUrl": "https://example.com/article"
+      "articleUrl": "The real URL from the articles above"
     },
     {
       "perspective": "center",
       "label": "Balanced Analysis",
-      "outlet": "Name of a real centrist outlet",
-      "headline": "A realistic headline from this perspective",
-      "summary": "2-3 sentence summary of how this perspective covers the story",
-      "timeAgo": "X hours ago",
+      "outlet": "Name of the actual outlet",
+      "headline": "The actual headline from the article",
+      "summary": "2-3 sentence summary based on the actual article content",
+      "timeAgo": "Recently",
       "claims": [...],
-      "articleUrl": "https://example.com/article"
+      "articleUrl": "The real URL from the articles above"
     },
     {
       "perspective": "right",
       "label": "Conservative View", 
-      "outlet": "Name of a real right-leaning outlet",
-      "headline": "A realistic headline from this perspective",
-      "summary": "2-3 sentence summary of how this perspective covers the story",
-      "timeAgo": "X hours ago",
+      "outlet": "Name of the actual outlet",
+      "headline": "The actual headline from the article",
+      "summary": "2-3 sentence summary based on the actual article content",
+      "timeAgo": "Recently",
       "claims": [...],
-      "articleUrl": "https://example.com/article"
+      "articleUrl": "The real URL from the articles above"
     }
   ]
 }
 
-Use real outlet names like: The Guardian, MSNBC, HuffPost (left); Reuters, AP News, BBC (center); Fox News, Wall Street Journal Opinion, The Daily Wire (right).
-Make the coverage realistic and based on how these outlets typically frame issues.
 Include 1-2 fact-checkable claims per perspective with realistic verification status.`;
 
     const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
@@ -107,7 +258,7 @@ Include 1-2 fact-checkable claims per perspective with realistic verification st
         model: 'google/gemini-2.5-flash',
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: `Analyze the following topic from multiple perspectives: "${topic}". Provide realistic news coverage as it would appear today.` }
+          { role: 'user', content: `Analyze the following topic from multiple perspectives: "${topic}". ${realArticles.length > 0 ? 'Use the real articles provided to create accurate summaries with working URLs.' : 'Provide realistic news coverage as it would appear today.'}` }
         ],
         temperature: 0.7,
       }),
@@ -135,7 +286,6 @@ Include 1-2 fact-checkable claims per perspective with realistic verification st
     // Parse the JSON response
     let parsedContent;
     try {
-      // Try to extract JSON from the response (in case it's wrapped in markdown)
       const jsonMatch = content.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         parsedContent = JSON.parse(jsonMatch[0]);
@@ -205,7 +355,6 @@ Include 1-2 fact-checkable claims per perspective with realistic verification st
               const firstReview = firstCheck.claimReview?.[0];
               
               if (firstReview) {
-                // Determine status from rating
                 const rating = (firstReview.textualRating || '').toLowerCase();
                 let status = 'disputed';
                 
@@ -229,14 +378,13 @@ Include 1-2 fact-checkable claims per perspective with realistic verification st
           console.log('Fact-checking complete');
         } catch (fcError) {
           console.error('Fact-check error:', fcError);
-          // Continue without fact-checking if it fails
         }
       } else {
         console.log('Google Fact Check API key not configured, skipping verification');
       }
     }
 
-    console.log('Successfully analyzed topic');
+    console.log('Successfully analyzed topic with real articles');
 
     return new Response(
       JSON.stringify({ success: true, data: parsedContent }),
