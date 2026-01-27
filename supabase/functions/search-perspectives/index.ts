@@ -62,56 +62,85 @@ function detectBias(outlet: string, url: string): 'left' | 'center' | 'right' {
   return 'center';
 }
 
-async function searchNews(topic: string, perplexityKey: string): Promise<NewsArticle[]> {
-  console.log('Searching news with Perplexity Search API for:', topic);
+async function searchNewsByBias(
+  topic: string,
+  perplexityKey: string,
+  bias: 'left' | 'center' | 'right'
+): Promise<NewsArticle[]> {
+  const siteFilters: Record<string, string> = {
+    left: 'site:theguardian.com OR site:msnbc.com OR site:huffpost.com OR site:vox.com OR site:slate.com OR site:thedailybeast.com',
+    center: 'site:reuters.com OR site:apnews.com OR site:bbc.com OR site:npr.org OR site:axios.com OR site:thehill.com',
+    right: 'site:foxnews.com OR site:wsj.com OR site:dailywire.com OR site:nypost.com OR site:washingtonexaminer.com OR site:nationalreview.com',
+  };
 
-  // Use Perplexity Search endpoint (returns real URLs directly; avoids LLM hallucinating URLs)
-  const response = await fetch('https://api.perplexity.ai/search', {
+  const query = `${topic} news ${siteFilters[bias]}`;
+  console.log(`Searching ${bias} sources:`, query);
+
+  const response = await fetch('https://api.perplexity.ai/chat/completions', {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${perplexityKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      query: `${topic} site:reuters.com OR site:apnews.com OR site:bbc.com OR site:theguardian.com OR site:msnbc.com OR site:huffpost.com OR site:foxnews.com OR site:wsj.com OR site:dailywire.com`,
+      model: 'sonar',
+      messages: [
+        {
+          role: 'user',
+          content: `Find the most recent news article about "${topic}" from these sources: ${siteFilters[bias]}. Just tell me what you found.`
+        }
+      ],
+      search_recency_filter: 'week',
     }),
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error('Perplexity /search error:', errorText);
-    throw new Error('Failed to search news');
+    console.error(`Perplexity ${bias} search error:`, errorText);
+    return [];
   }
 
   const data = await response.json();
+  const citations: string[] = data.citations || [];
+  const content = data.choices?.[0]?.message?.content || '';
+  
+  console.log(`${bias} search found ${citations.length} citations`);
 
-  // Best-effort extraction across possible response shapes
-  const results: any[] =
-    data?.results ||
-    data?.data ||
-    data?.items ||
-    (Array.isArray(data) ? data : []);
-
-  const articles: NewsArticle[] = results
-    .map((r: any) => {
-      const url = r.url || r.link || r.sourceURL;
-      const title = r.title || r.name || r.headline || '';
-      const snippet = r.snippet || r.description || r.summary || '';
-      if (!url || typeof url !== 'string') return null;
-
-      const outlet = r.outlet || detectOutletFromUrl(url);
+  // Extract articles from citations (these are real URLs from Perplexity's search)
+  const articles: NewsArticle[] = citations
+    .filter((url: string) => url && typeof url === 'string' && url.startsWith('http'))
+    .map((url: string) => {
+      const outlet = detectOutletFromUrl(url);
+      // Try to extract title from content if mentioned
+      const urlDomain = new URL(url).hostname.replace('www.', '');
+      const titleMatch = content.match(new RegExp(`["']([^"']{10,100})["'][^"']*${urlDomain.split('.')[0]}`, 'i'));
+      
       return {
         url,
-        title: title || `Article from ${outlet}`,
+        title: titleMatch?.[1] || `Article from ${outlet}`,
         outlet,
-        snippet,
-        bias: detectBias(outlet, url),
-      } as NewsArticle;
-    })
-    .filter(Boolean) as NewsArticle[];
+        snippet: '',
+        bias: bias,
+      };
+    });
 
-  console.log('Perplexity /search returned articles:', articles.length);
-  return articles.slice(0, 12);
+  return articles;
+}
+
+async function searchNews(topic: string, perplexityKey: string): Promise<NewsArticle[]> {
+  console.log('Searching news with Perplexity for diverse sources:', topic);
+
+  // Search each bias category in parallel to ensure diverse sources
+  const [leftArticles, centerArticles, rightArticles] = await Promise.all([
+    searchNewsByBias(topic, perplexityKey, 'left'),
+    searchNewsByBias(topic, perplexityKey, 'center'),
+    searchNewsByBias(topic, perplexityKey, 'right'),
+  ]);
+
+  const allArticles = [...leftArticles, ...centerArticles, ...rightArticles];
+  console.log(`Total articles found: ${allArticles.length} (left: ${leftArticles.length}, center: ${centerArticles.length}, right: ${rightArticles.length})`);
+  
+  return allArticles;
 }
 
 function pickByBias(articles: NewsArticle[], bias: 'left' | 'center' | 'right'): NewsArticle | undefined {
@@ -385,31 +414,41 @@ Include 1-2 fact-checkable claims per perspective with realistic verification st
             })
           );
 
-          // Update claims with real fact-check data
+          // Update claims with real fact-check data and mark which are verified by real fact-checkers
           factCheckResults.forEach(({ claimText, factChecks }) => {
             const location = claimMap.get(claimText);
-            if (location && factChecks.length > 0) {
+            if (location) {
               const claim = parsedContent.perspectives[location.perspectiveIndex].claims[location.claimIndex];
-              const firstCheck = factChecks[0];
-              const firstReview = firstCheck.claimReview?.[0];
               
-              if (firstReview) {
-                const rating = (firstReview.textualRating || '').toLowerCase();
-                let status = 'disputed';
+              if (factChecks.length > 0) {
+                const firstCheck = factChecks[0];
+                const firstReview = firstCheck.claimReview?.[0];
                 
-                if (rating.includes('true') || rating.includes('correct') || rating.includes('accurate')) {
-                  status = 'verified';
-                } else if (rating.includes('false') || rating.includes('wrong') || rating.includes('pants on fire')) {
-                  status = 'false';
-                } else if (rating.includes('mixed') || rating.includes('partly') || rating.includes('misleading')) {
-                  status = 'disputed';
+                if (firstReview) {
+                  const rating = (firstReview.textualRating || '').toLowerCase();
+                  let status = 'disputed';
+                  
+                  if (rating.includes('true') || rating.includes('correct') || rating.includes('accurate')) {
+                    status = 'verified';
+                  } else if (rating.includes('false') || rating.includes('wrong') || rating.includes('pants on fire')) {
+                    status = 'false';
+                  } else if (rating.includes('mixed') || rating.includes('partly') || rating.includes('misleading')) {
+                    status = 'disputed';
+                  }
+                  
+                  claim.status = status;
+                  claim.source = firstReview.publisher?.name || 'Fact Checker';
+                  claim.sourceUrl = firstReview.url || '';
+                  claim.factCheckRating = firstReview.textualRating;
+                  claim.factCheckTitle = firstReview.title;
+                  claim.isRealFactCheck = true; // Mark as verified by real fact-checker
                 }
-                
-                claim.status = status;
-                claim.source = firstReview.publisher?.name || claim.source;
-                claim.sourceUrl = firstReview.url || claim.sourceUrl;
-                claim.factCheckRating = firstReview.textualRating;
-                claim.factCheckTitle = firstReview.title;
+              } else {
+                // No fact-check found - mark as unverified (AI-generated status)
+                claim.status = 'unverified';
+                claim.source = 'Not yet fact-checked';
+                claim.sourceUrl = '';
+                claim.isRealFactCheck = false;
               }
             }
           });

@@ -8,6 +8,7 @@ export interface Claim {
   sourceUrl: string;
   factCheckRating?: string;
   factCheckTitle?: string;
+  isRealFactCheck?: boolean;
 }
 
 export interface Perspective {
