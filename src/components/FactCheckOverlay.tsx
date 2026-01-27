@@ -42,9 +42,13 @@ const FactCheckOverlay = ({ claims }: FactCheckOverlayProps) => {
     },
   };
 
-  // Separate real fact-checks from unverified claims
+  // Only show claims that have been verified by Google Fact Check API
   const realFactChecks = claims.filter(c => c.isRealFactCheck);
-  const unverifiedClaims = claims.filter(c => !c.isRealFactCheck);
+
+  // Don't render anything if no real fact-checks exist
+  if (realFactChecks.length === 0) {
+    return null;
+  }
 
   return (
     <div className="space-y-3 mb-4 animate-scale-in">
@@ -99,31 +103,10 @@ const FactCheckOverlay = ({ claims }: FactCheckOverlayProps) => {
           </div>
         );
       })}
-
-      {unverifiedClaims.map((claim, index) => (
-        <div
-          key={`unverified-${index}`}
-          className="p-3 rounded-md bg-gray-50 dark:bg-gray-900/30 border-l-2 border-gray-300 shadow-sm"
-        >
-          <div className="flex items-start gap-2">
-            <HelpCircle className="w-4 h-4 mt-0.5 flex-shrink-0 text-gray-400" />
-            <div className="flex-1 min-w-0">
-              <p className="text-xs leading-relaxed text-foreground mb-2">
-                "{claim.text}"
-              </p>
-              <span className="text-xs text-gray-500">
-                Pending verification
-              </span>
-            </div>
-          </div>
-        </div>
-      ))}
       
-      {realFactChecks.length > 0 && (
-        <p className="text-[10px] text-muted-foreground text-center mt-2">
-          Verified by independent fact-checkers via Google Fact Check API
-        </p>
-      )}
+      <p className="text-[10px] text-muted-foreground text-center mt-2">
+        Verified by independent fact-checkers via Google Fact Check API
+      </p>
     </div>
   );
 };
