@@ -1,4 +1,4 @@
-import { CheckCircle2, AlertTriangle, XCircle, HelpCircle, ExternalLink } from "lucide-react";
+import { CheckCircle2, AlertTriangle, XCircle, HelpCircle, ExternalLink, ShieldCheck } from "lucide-react";
 
 interface Claim {
   text: string;
@@ -7,6 +7,7 @@ interface Claim {
   sourceUrl: string;
   factCheckRating?: string;
   factCheckTitle?: string;
+  isRealFactCheck?: boolean;
 }
 
 interface FactCheckOverlayProps {
@@ -41,16 +42,20 @@ const FactCheckOverlay = ({ claims }: FactCheckOverlayProps) => {
     },
   };
 
+  // Separate real fact-checks from unverified claims
+  const realFactChecks = claims.filter(c => c.isRealFactCheck);
+  const unverifiedClaims = claims.filter(c => !c.isRealFactCheck);
+
   return (
     <div className="space-y-3 mb-4 animate-scale-in">
-      {claims.map((claim, index) => {
+      {realFactChecks.map((claim, index) => {
         const status = claim.status || 'unverified';
         const config = statusConfig[status] || statusConfig.unverified;
         const Icon = config.icon;
 
         return (
           <div
-            key={index}
+            key={`real-${index}`}
             className={`p-3 rounded-md ${config.className} shadow-sm`}
           >
             <div className="flex items-start gap-2">
@@ -67,10 +72,13 @@ const FactCheckOverlay = ({ claims }: FactCheckOverlayProps) => {
                 )}
                 
                 <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <span className={`text-xs font-semibold ${config.textClass}`}>
-                    {config.label}
-                  </span>
-                  {claim.sourceUrl && claim.sourceUrl !== '#' && claim.sourceUrl !== 'https://example.com' ? (
+                  <div className="flex items-center gap-1.5">
+                    <span className={`text-xs font-semibold ${config.textClass}`}>
+                      {config.label}
+                    </span>
+                    <ShieldCheck className="w-3 h-3 text-primary" />
+                  </div>
+                  {claim.sourceUrl && claim.sourceUrl.startsWith('http') ? (
                     <a
                       href={claim.sourceUrl}
                       target="_blank"
@@ -91,10 +99,37 @@ const FactCheckOverlay = ({ claims }: FactCheckOverlayProps) => {
           </div>
         );
       })}
+
+      {unverifiedClaims.map((claim, index) => (
+        <div
+          key={`unverified-${index}`}
+          className="p-3 rounded-md bg-gray-50 dark:bg-gray-900/30 border-l-2 border-gray-300 shadow-sm"
+        >
+          <div className="flex items-start gap-2">
+            <HelpCircle className="w-4 h-4 mt-0.5 flex-shrink-0 text-gray-400" />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs leading-relaxed text-foreground mb-2">
+                "{claim.text}"
+              </p>
+              <span className="text-xs text-gray-500">
+                Not yet fact-checked by independent sources
+              </span>
+            </div>
+          </div>
+        </div>
+      ))}
       
-      <p className="text-[10px] text-muted-foreground text-center mt-2">
-        Fact-checks powered by Google Fact Check Tools API
-      </p>
+      {realFactChecks.length > 0 && (
+        <p className="text-[10px] text-muted-foreground text-center mt-2">
+          Fact-checks powered by Google Fact Check Tools API
+        </p>
+      )}
+      
+      {realFactChecks.length === 0 && unverifiedClaims.length > 0 && (
+        <p className="text-[10px] text-muted-foreground text-center mt-2">
+          No independent fact-checks found for these claims
+        </p>
+      )}
     </div>
   );
 };
