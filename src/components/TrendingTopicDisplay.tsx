@@ -32,13 +32,16 @@ const TrendingTopicDisplay = ({ topic, perspectives }: TrendingTopicDisplayProps
           </div>
           <div className="flex items-center gap-2">
             {topic.tags.map((tag) => (
-              <span
+              <a
                 key={tag}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-accent text-xs font-medium"
+                href={`https://twitter.com/search?q=%23${encodeURIComponent(tag.replace(/\s+/g, ''))}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-accent text-xs font-medium hover:bg-primary hover:text-primary-foreground transition-colors cursor-pointer"
               >
                 <Hash className="w-3 h-3" />
                 {tag}
-              </span>
+              </a>
             ))}
           </div>
         </div>
@@ -53,36 +56,6 @@ const TrendingTopicDisplay = ({ topic, perspectives }: TrendingTopicDisplayProps
             animationDelay={`${0.3 + index * 0.1}s`}
           />
         ))}
-      </div>
-
-      {/* Legend */}
-      <div className="max-w-2xl mx-auto mt-12 p-6 bg-card rounded-lg border border-border animate-fade-in" style={{ animationDelay: "0.6s" }}>
-        <h3 className="font-serif text-lg font-semibold mb-4 text-center">
-          Understanding the Perspectives
-        </h3>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
-          <div className="flex items-center gap-3">
-            <div className="w-3 h-8 rounded-full bg-perspective-left" />
-            <div>
-              <p className="font-medium">Progressive</p>
-              <p className="text-xs text-muted-foreground">Left-leaning sources</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="w-3 h-8 rounded-full bg-perspective-center" />
-            <div>
-              <p className="font-medium">Balanced</p>
-              <p className="text-xs text-muted-foreground">Centrist sources</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="w-3 h-8 rounded-full bg-perspective-right" />
-            <div>
-              <p className="font-medium">Conservative</p>
-              <p className="text-xs text-muted-foreground">Right-leaning sources</p>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   );
