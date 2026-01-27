@@ -119,7 +119,22 @@ function pickByBias(articles: NewsArticle[], bias: 'left' | 'center' | 'right'):
   return candidates[0] || articles[0];
 }
 
-function enforceRealUrls(parsedContent: any, realArticles: NewsArticle[]) {
+// Known fact-checking domains - URLs from these should be preserved
+const factCheckDomains = [
+  'snopes.com', 'politifact.com', 'factcheck.org', 'fullfact.org',
+  'checkyourfact.com', 'leadstories.com', 'reuters.com/fact-check',
+  'apnews.com/hub/ap-fact-check', 'washingtonpost.com/news/fact-checker',
+  'bbc.com/news/reality_check', 'usatoday.com/news/factcheck',
+];
+
+function isFactCheckUrl(url: string): boolean {
+  if (!url || typeof url !== 'string') return false;
+  const lowerUrl = url.toLowerCase();
+  return factCheckDomains.some(domain => lowerUrl.includes(domain));
+}
+
+function enforceRealArticleUrls(parsedContent: any, realArticles: NewsArticle[]) {
+  // Only enforce article URLs - DO NOT touch claim sourceUrls (those come from Google Fact Check API)
   if (!parsedContent?.perspectives || !Array.isArray(parsedContent.perspectives) || realArticles.length === 0) return;
 
   const allowedUrls = new Set(realArticles.map((a) => a.url));
@@ -138,7 +153,7 @@ function enforceRealUrls(parsedContent: any, realArticles: NewsArticle[]) {
     const chosen = fallbackFor(p);
     if (!chosen) return;
 
-    // Enforce articleUrl
+    // Enforce articleUrl only
     if (!p.articleUrl || typeof p.articleUrl !== 'string' || !allowedUrls.has(p.articleUrl)) {
       p.articleUrl = chosen.url;
     }
@@ -150,19 +165,8 @@ function enforceRealUrls(parsedContent: any, realArticles: NewsArticle[]) {
     if (!p.headline || typeof p.headline !== 'string' || p.headline.toLowerCase().includes('realistic headline')) {
       p.headline = chosen.title;
     }
-
-    // If claim source URLs are clearly fake, try to replace with the article URL.
-    if (Array.isArray(p.claims)) {
-      p.claims.forEach((c: any) => {
-        if (!c || typeof c !== 'object') return;
-        const u = c.sourceUrl;
-        const isProbablyFake = typeof u !== 'string' || !u.startsWith('http') || u.includes('example.com');
-        if (isProbablyFake) {
-          c.sourceUrl = chosen.url;
-          if (!c.source || typeof c.source !== 'string') c.source = chosen.outlet;
-        }
-      });
-    }
+    
+    // DO NOT modify claim sourceUrls here - let fact-check API populate them
   });
 }
 
@@ -333,7 +337,7 @@ Include 1-2 fact-checkable claims per perspective with realistic verification st
     }
 
     // Enforce real URLs (prevents hallucinated/fake links)
-    enforceRealUrls(parsedContent, realArticles);
+    enforceRealArticleUrls(parsedContent, realArticles);
 
     // Extract all claims from perspectives for fact-checking
     const allClaims: string[] = [];
