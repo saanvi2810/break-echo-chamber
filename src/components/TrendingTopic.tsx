@@ -2,13 +2,14 @@ import { useState, useCallback } from "react";
 import { useToast } from "@/hooks/use-toast";
 import TopicSearch from "./TopicSearch";
 import TrendingTopicDisplay from "./TrendingTopicDisplay";
-import { searchPerspectives, type TopicData, type Perspective } from "@/lib/api/perspectives";
+import { searchPerspectives, type TopicData, type Perspective, type FactCheck } from "@/lib/api/perspectives";
 
 const TrendingTopic = () => {
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
   const [currentTopic, setCurrentTopic] = useState<TopicData | null>(null);
   const [perspectives, setPerspectives] = useState<Perspective[] | null>(null);
+  const [factChecks, setFactChecks] = useState<FactCheck[]>([]);
   const [retryAttempt, setRetryAttempt] = useState(0);
   const [lastSearchTopic, setLastSearchTopic] = useState("");
   const [searchError, setSearchError] = useState<string | undefined>();
@@ -30,20 +31,6 @@ const TrendingTopic = () => {
       headline: "Tech Giants Lobby Against Worker Protections in AI Bill",
       summary: "Critics argue that proposed AI legislation prioritizes corporate interests while failing to address automation's impact on working families and marginalized communities.",
       timeAgo: "2 hours ago",
-      claims: [
-        {
-          text: "AI could displace 40% of jobs in the next decade",
-          status: "disputed",
-          source: "MIT Technology Review",
-          sourceUrl: "https://example.com/source1",
-        },
-        {
-          text: "Major tech companies spent $50M lobbying against the bill",
-          status: "verified",
-          source: "OpenSecrets",
-          sourceUrl: "https://example.com/source2",
-        },
-      ],
       articleUrl: "#",
     },
     {
@@ -53,20 +40,6 @@ const TrendingTopic = () => {
       headline: "AI Safety Framework: Weighing Innovation Against Regulation",
       summary: "The proposed legislation attempts to balance technological advancement with public safety concerns, though experts remain divided on its potential effectiveness.",
       timeAgo: "3 hours ago",
-      claims: [
-        {
-          text: "The bill includes provisions for both innovation incentives and safety requirements",
-          status: "verified",
-          source: "Congressional Research Service",
-          sourceUrl: "https://example.com/source3",
-        },
-        {
-          text: "Similar frameworks have been implemented in the EU",
-          status: "verified",
-          source: "European Commission",
-          sourceUrl: "https://example.com/source4",
-        },
-      ],
       articleUrl: "#",
     },
     {
@@ -76,20 +49,6 @@ const TrendingTopic = () => {
       headline: "Overreaching AI Regulations Threaten American Competitiveness",
       summary: "Business leaders warn that excessive government intervention could stifle innovation and push AI development overseas, benefiting competitors like China.",
       timeAgo: "4 hours ago",
-      claims: [
-        {
-          text: "China has invested $15B in AI development this year alone",
-          status: "verified",
-          source: "CSIS Analysis",
-          sourceUrl: "https://example.com/source5",
-        },
-        {
-          text: "The regulations would cost businesses $200B annually",
-          status: "false",
-          source: "FactCheck.org",
-          sourceUrl: "https://example.com/source6",
-        },
-      ],
       articleUrl: "#",
     },
   ];
@@ -122,6 +81,7 @@ const TrendingTopic = () => {
     } else if (result.data) {
       setCurrentTopic(result.data.topic);
       setPerspectives(result.data.perspectives);
+      setFactChecks(result.data.factChecks || []);
       setSearchError(undefined);
       toast({
         title: "Analysis Complete",
@@ -158,7 +118,7 @@ const TrendingTopic = () => {
         </div>
 
         {/* Topic Display */}
-        <TrendingTopicDisplay topic={displayTopic} perspectives={displayPerspectives} />
+        <TrendingTopicDisplay topic={displayTopic} perspectives={displayPerspectives} factChecks={factChecks} />
       </div>
     </section>
   );

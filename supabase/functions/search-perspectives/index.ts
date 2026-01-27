@@ -260,7 +260,7 @@ TODAY'S DATE IS: ${currentDate}
 ${articleContext}
 
 IMPORTANT: You must respond with valid JSON only. No markdown, no code blocks, just raw JSON.
-${realArticles.length > 0 ? 'CRITICAL: You MUST choose articleUrl and any sourceUrl ONLY from the REAL ARTICLES list above. Never invent URLs.' : ''}
+${realArticles.length > 0 ? 'CRITICAL: You MUST choose articleUrl ONLY from the REAL ARTICLES list above. Never invent URLs.' : ''}
 
 The JSON must follow this exact structure:
 {
@@ -278,14 +278,6 @@ The JSON must follow this exact structure:
       "headline": "The actual headline from the article",
       "summary": "2-3 sentence summary based on the actual article content",
       "timeAgo": "Recently",
-      "claims": [
-        {
-          "text": "A specific factual claim from the article",
-          "status": "verified OR disputed OR false",
-          "source": "Fact-check source",
-          "sourceUrl": "https://example.com"
-        }
-      ],
       "articleUrl": "The real URL from the articles above"
     },
     {
@@ -295,7 +287,6 @@ The JSON must follow this exact structure:
       "headline": "The actual headline from the article",
       "summary": "2-3 sentence summary based on the actual article content",
       "timeAgo": "Recently",
-      "claims": [...],
       "articleUrl": "The real URL from the articles above"
     },
     {
@@ -305,13 +296,10 @@ The JSON must follow this exact structure:
       "headline": "The actual headline from the article",
       "summary": "2-3 sentence summary based on the actual article content",
       "timeAgo": "Recently",
-      "claims": [...],
       "articleUrl": "The real URL from the articles above"
     }
   ]
-}
-
-Include 1-2 fact-checkable claims per perspective with realistic verification status.`;
+}`;
 
     const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
       method: 'POST',
@@ -368,130 +356,64 @@ Include 1-2 fact-checkable claims per perspective with realistic verification st
     // Enforce real URLs (prevents hallucinated/fake links)
     enforceRealArticleUrls(parsedContent, realArticles);
 
-    // Extract all claims from perspectives for fact-checking
-    const allClaims: string[] = [];
-    const claimMap: Map<string, { perspectiveIndex: number; claimIndex: number }> = new Map();
+    // Search for topic-level fact-checks from Google Fact Check API
+    // These are real fact-checks from organizations like Snopes, PolitiFact, etc.
+    let topicFactChecks: any[] = [];
+    const factCheckApiKey = Deno.env.get('GOOGLE_FACT_CHECK_API_KEY');
     
-    if (parsedContent.perspectives) {
-      parsedContent.perspectives.forEach((perspective: any, pIndex: number) => {
-        if (perspective.claims && Array.isArray(perspective.claims)) {
-          perspective.claims.forEach((claim: any, cIndex: number) => {
-            if (claim.text) {
-              allClaims.push(claim.text);
-              claimMap.set(claim.text, { perspectiveIndex: pIndex, claimIndex: cIndex });
-            }
-          });
-        }
-      });
-    }
-
-    // Fact-check claims using Google Fact Check API
-    // Also search for topic-level fact-checks to increase hit rate
-    if (allClaims.length > 0) {
-      console.log(`Fact-checking ${allClaims.length} claims`);
-      
-      const factCheckApiKey = Deno.env.get('GOOGLE_FACT_CHECK_API_KEY');
-      
-      if (factCheckApiKey) {
-        try {
-          // First, search for topic-level fact-checks
-          const topicQuery = encodeURIComponent(topic.slice(0, 100));
-          const topicFcResponse = await fetch(
-            `https://factchecktools.googleapis.com/v1alpha1/claims:search?query=${topicQuery}&key=${factCheckApiKey}&languageCode=en`,
-            { method: 'GET' }
-          );
+    if (factCheckApiKey) {
+      try {
+        const topicQuery = encodeURIComponent(topic.slice(0, 100));
+        const fcResponse = await fetch(
+          `https://factchecktools.googleapis.com/v1alpha1/claims:search?query=${topicQuery}&key=${factCheckApiKey}&languageCode=en`,
+          { method: 'GET' }
+        );
+        
+        if (fcResponse.ok) {
+          const fcData = await fcResponse.json();
+          const rawClaims = fcData.claims || [];
+          console.log(`Topic fact-checks found: ${rawClaims.length}`);
           
-          let topicFactChecks: any[] = [];
-          if (topicFcResponse.ok) {
-            const topicFcData = await topicFcResponse.json();
-            topicFactChecks = topicFcData.claims || [];
-            console.log(`Topic-level fact-checks found: ${topicFactChecks.length}`);
-            if (topicFactChecks.length > 0) {
-              console.log(`First topic fact-check: ${JSON.stringify(topicFactChecks[0]?.claimReview?.[0]?.publisher?.name)}`);
+          // Transform to a cleaner format
+          topicFactChecks = rawClaims.slice(0, 5).map((claim: any) => {
+            const review = claim.claimReview?.[0];
+            if (!review) return null;
+            
+            const rating = (review.textualRating || '').toLowerCase();
+            let status = 'disputed';
+            if (rating.includes('true') || rating.includes('correct') || rating.includes('accurate')) {
+              status = 'verified';
+            } else if (rating.includes('false') || rating.includes('wrong') || rating.includes('pants on fire')) {
+              status = 'false';
+            } else if (rating.includes('mixed') || rating.includes('partly') || rating.includes('misleading')) {
+              status = 'disputed';
             }
-          } else {
-            const errorText = await topicFcResponse.text();
-            console.log(`Topic fact-check API error (${topicFcResponse.status}): ${errorText.slice(0, 200)}`);
-          }
-
-          const factCheckResults = await Promise.all(
-            allClaims.map(async (claimText: string) => {
-              try {
-                const searchQuery = encodeURIComponent(claimText.slice(0, 200));
-                const fcResponse = await fetch(
-                  `https://factchecktools.googleapis.com/v1alpha1/claims:search?query=${searchQuery}&key=${factCheckApiKey}&languageCode=en`,
-                  { method: 'GET' }
-                );
-                
-                if (!fcResponse.ok) {
-                  const errText = await fcResponse.text();
-                  console.log(`Fact-check API error (${fcResponse.status}) for "${claimText.slice(0, 30)}...": ${errText.slice(0, 100)}`);
-                  return { claimText, factChecks: [] };
-                }
-                
-                const fcData = await fcResponse.json();
-                const results = fcData.claims || [];
-                console.log(`Claim "${claimText.slice(0, 40)}..." - found ${results.length} fact-checks`);
-                return { claimText, factChecks: results };
-              } catch (e) {
-                console.log(`Fact-check error for claim: ${e}`);
-                return { claimText, factChecks: [] };
-              }
-            })
-          );
-
-          // Update claims with real fact-check data
-          let matchedCount = 0;
-          factCheckResults.forEach(({ claimText, factChecks }) => {
-            const location = claimMap.get(claimText);
-            if (location) {
-              const claim = parsedContent.perspectives[location.perspectiveIndex].claims[location.claimIndex];
-              
-              // Use claim-specific fact-checks, or fall back to topic-level if available
-              const relevantChecks = factChecks.length > 0 ? factChecks : topicFactChecks;
-              
-              if (relevantChecks.length > 0) {
-                const firstCheck = relevantChecks[0];
-                const firstReview = firstCheck.claimReview?.[0];
-                
-                if (firstReview) {
-                  matchedCount++;
-                  const rating = (firstReview.textualRating || '').toLowerCase();
-                  let status: string = 'disputed';
-                  
-                  if (rating.includes('true') || rating.includes('correct') || rating.includes('accurate')) {
-                    status = 'verified';
-                  } else if (rating.includes('false') || rating.includes('wrong') || rating.includes('pants on fire')) {
-                    status = 'false';
-                  } else if (rating.includes('mixed') || rating.includes('partly') || rating.includes('misleading')) {
-                    status = 'disputed';
-                  }
-                  
-                  claim.status = status;
-                  claim.source = firstReview.publisher?.name || 'Fact Checker';
-                  claim.sourceUrl = firstReview.url || '';
-                  claim.factCheckRating = firstReview.textualRating;
-                  claim.factCheckTitle = firstReview.title;
-                  claim.isRealFactCheck = true;
-                }
-              } else {
-                // No fact-check found - mark as unverified
-                claim.status = 'unverified';
-                claim.source = 'Not yet fact-checked';
-                claim.sourceUrl = '';
-                claim.isRealFactCheck = false;
-              }
-            }
-          });
-
-          console.log(`Fact-checking complete: ${matchedCount}/${allClaims.length} claims matched`);
-        } catch (fcError) {
-          console.error('Fact-check error:', fcError);
+            
+            return {
+              claimText: claim.text || '',
+              claimant: claim.claimant || 'Unknown',
+              rating: review.textualRating || '',
+              status,
+              source: review.publisher?.name || 'Fact Checker',
+              sourceUrl: review.url || '',
+              title: review.title || '',
+            };
+          }).filter(Boolean);
+          
+          console.log(`Processed ${topicFactChecks.length} fact-checks`);
+        } else {
+          const errorText = await fcResponse.text();
+          console.log(`Fact-check API error (${fcResponse.status}): ${errorText.slice(0, 200)}`);
         }
-      } else {
-        console.log('Google Fact Check API key not configured, skipping verification');
+      } catch (fcError) {
+        console.error('Fact-check error:', fcError);
       }
+    } else {
+      console.log('Google Fact Check API key not configured');
     }
+
+    // Add fact-checks to the response
+    parsedContent.factChecks = topicFactChecks;
 
     console.log('Successfully analyzed topic with real articles');
 
