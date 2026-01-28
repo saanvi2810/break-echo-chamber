@@ -108,139 +108,93 @@ async function searchWithFirecrawl(
   firecrawlKey: string
 ): Promise<NewsArticle[]> {
   const domains = domainsByBias[bias];
-  
-  // Build site: query string (like Google: "topic site:nytimes.com OR site:cnn.com")
-  const siteFilters = domains.slice(0, 8).map(d => `site:${d}`).join(' OR ');
-  const searchQuery = `${topic} (${siteFilters})`;
-  
-  console.log(`[${bias}] Firecrawl search: ${searchQuery.slice(0, 100)}...`);
-  
-  try {
-    const response = await fetch('https://api.firecrawl.dev/v1/search', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${firecrawlKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query: searchQuery,
-        limit: 10,
-        lang: 'en',
-        country: 'us',
-        tbs: 'qdr:w', // Last week
-        scrapeOptions: {
-          formats: ['markdown'],
-        },
-      }),
-    });
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`[${bias}] Firecrawl error:`, errorText);
-      return [];
-    }
-    
-    const data = await response.json();
-    const results = data.data || [];
-    
-    console.log(`[${bias}] Firecrawl returned ${results.length} results`);
-    
+  const allowedDomains = new Set(domains.map(d => d.toLowerCase()));
+
+  const chunk = <T,>(arr: T[], size: number) =>
+    Array.from({ length: Math.ceil(arr.length / size) }, (_, i) => arr.slice(i * size, i * size + size));
+
+  const buildSearchQuery = (domainsChunk: string[]) => {
+    const siteFilters = domainsChunk.map(d => `site:${d}`).join(' OR ');
+    return `${topic} (${siteFilters})`;
+  };
+
+  const toArticlesFromResults = (results: any[]): NewsArticle[] => {
     const articles: NewsArticle[] = [];
-    const allowedDomains = new Set(domains.map(d => d.toLowerCase()));
-    
-    for (const result of results) {
-      const url = result.url;
+
+    for (const result of results || []) {
+      const url = result?.url;
       if (!url || typeof url !== 'string') continue;
-      
+
       // Verify URL is from an allowed domain for this bias
       try {
         const hostname = new URL(url).hostname.toLowerCase().replace('www.', '');
-        const isAllowed = [...allowedDomains].some(domain => 
-          hostname === domain || hostname.endsWith('.' + domain)
-        );
-        
-        if (!isAllowed) {
-          console.log(`[${bias}] Skipping off-list domain: ${hostname}`);
-          continue;
-        }
+        const isAllowed = [...allowedDomains].some(domain => hostname === domain || hostname.endsWith('.' + domain));
+        if (!isAllowed) continue;
       } catch {
         continue;
       }
-      
-      if (!isArticlePath(url)) {
-        console.log(`[${bias}] Skipping non-article URL: ${url}`);
-        continue;
-      }
-      
+
+      if (!isArticlePath(url)) continue;
+
       const outlet = detectOutletFromUrl(url);
-      
+
       // Clean up title - remove markdown artifacts
       let title = result.title || `Article from ${outlet}`;
-      title = title.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'); // Remove markdown links
-      title = title.replace(/[#*_`]/g, '').trim(); // Remove markdown formatting
-      
+      title = title.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+      title = title.replace(/[#*_`]/g, '').trim();
+
       // Clean up snippet - extract readable text from markdown/description
       let snippet = '';
       if (result.markdown) {
-        // Remove markdown formatting, links, images, etc.
-        let cleanText = result.markdown
-          .replace(/!\[[^\]]*\]\([^)]+\)/g, '') // Remove images
-          .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // Convert links to text
-          .replace(/#{1,6}\s*/g, '') // Remove headers
-          .replace(/[*_`~]/g, '') // Remove formatting chars
-          .replace(/\n+/g, ' ') // Convert newlines to spaces
-          .replace(/\s+/g, ' ') // Normalize whitespace
+        const cleanText = String(result.markdown)
+          .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
+          .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+          .replace(/#{1,6}\s*/g, '')
+          .replace(/[*_`~]/g, '')
+          .replace(/\n+/g, ' ')
+          .replace(/\s+/g, ' ')
           .trim();
-        
-        // Patterns to skip (navigation, stock tickers, ads, metadata)
+
         const skipPatterns = [
           /^(skip to|accessibility|enable accessibility|navigation|menu|search)/i,
           /^(left arrow|right arrow|previous|next)/i,
           /^\d+$/,
-          // Stock/market data patterns
+          // Stock/market data patterns (CNN/Forbes sidebars frequently)
           /^(markets|dow|s&p|nasdaq|hot stocks)/i,
-          /\d+[.,]\d+[%\-+]/i, // Stock numbers like "49,003.41-408.99"
+          /\b(markets|dow|s&p|nasdaq)\b/i,
+          /\d+[.,]\d+[%\-+]/i,
           /^(by\s+\w+\s+(staff|reporter|contributor))/i,
           /^(follow\s+(author|us|me))/i,
           /^(breaking|trending|popular|featured)/i,
           /^(advertisement|sponsored|promoted)/i,
         ];
-        
-        // Find first substantial sentence (actual article content)
+
         const sentences = cleanText.split(/(?<=[.!?])\s+/);
         for (const sentence of sentences) {
           const trimmed = sentence.trim();
-          // Skip short sentences, navigation, stock data, bylines
           if (trimmed.length < 60) continue;
           if (skipPatterns.some(p => p.test(trimmed))) continue;
-          // Skip if mostly numbers/symbols (stock data)
           const letterRatio = (trimmed.match(/[a-zA-Z]/g) || []).length / trimmed.length;
           if (letterRatio < 0.5) continue;
-          
           snippet = trimmed.slice(0, 350);
           break;
         }
-        
-        // Fallback: use cleaned text if we couldn't find good content
+
         if (!snippet && cleanText.length > 80) {
-          // Try to find any text after common prefixes
           const afterByline = cleanText.replace(/^.*?(By\s+\w+[^.]+\.)/i, '').trim();
-          if (afterByline.length > 80) {
-            snippet = afterByline.slice(0, 350);
-          }
+          if (afterByline.length > 80) snippet = afterByline.slice(0, 350);
         }
       }
-      
-      // Fallback to description (often cleaner than full page scrape)
-      if (!snippet && result.description) {
-        snippet = result.description.replace(/[#*_`]/g, '').trim();
+
+      // Prefer description when it exists and the markdown-derived snippet looks like boilerplate
+      if (result.description) {
+        const d = String(result.description).replace(/[#*_`]/g, '').trim();
+        const looksBad = !snippet || /\b(markets|dow|s&p|nasdaq|accessibility|skip to)\b/i.test(snippet);
+        if (d && looksBad) snippet = d;
       }
-      
-      // Final fallback: use title as snippet
-      if (!snippet) {
-        snippet = title;
-      }
-      
+
+      if (!snippet) snippet = title;
+
       articles.push({
         url,
         title,
@@ -249,10 +203,74 @@ async function searchWithFirecrawl(
         bias,
       });
     }
-    
-    console.log(`[${bias}] Valid articles: ${articles.length}`);
+
     return articles;
-    
+  };
+
+  const fetchFirecrawl = async (query: string, tbs: 'qdr:w' | 'qdr:m') => {
+    const response = await fetch('https://api.firecrawl.dev/v1/search', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${firecrawlKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        query,
+        limit: 10,
+        lang: 'en',
+        country: 'us',
+        tbs,
+        scrapeOptions: { formats: ['markdown'] },
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[${bias}] Firecrawl error:`, errorText);
+      return [];
+    }
+
+    const data = await response.json();
+    return data.data || [];
+  };
+
+  try {
+    // IMPORTANT: search ALL domains for the bias in chunks (not only the first 8)
+    const domainChunks = chunk(domains, 8);
+
+    const runPass = async (tbs: 'qdr:w' | 'qdr:m') => {
+      const queries = domainChunks.map(buildSearchQuery);
+      console.log(`[${bias}] Firecrawl pass (${tbs}) across ${queries.length} domain batches`);
+
+      const batchResults = await Promise.all(
+        queries.map(async (q) => {
+          console.log(`[${bias}] Firecrawl search: ${q.slice(0, 100)}...`);
+          return fetchFirecrawl(q, tbs);
+        })
+      );
+
+      const merged = batchResults.flat();
+      console.log(`[${bias}] Firecrawl returned ${merged.length} results (merged)`);
+      return toArticlesFromResults(merged);
+    };
+
+    // Pass 1: last week
+    let articles = await runPass('qdr:w');
+    if (articles.length === 0) {
+      // Pass 2: last month (still constrained to allowed domains)
+      articles = await runPass('qdr:m');
+    }
+
+    // Deduplicate by URL (Firecrawl batches can overlap)
+    const seen = new Set<string>();
+    const deduped = articles.filter(a => {
+      if (seen.has(a.url)) return false;
+      seen.add(a.url);
+      return true;
+    });
+
+    console.log(`[${bias}] Valid articles: ${deduped.length}`);
+    return deduped;
   } catch (error) {
     console.error(`[${bias}] Firecrawl search failed:`, error);
     return [];
@@ -346,6 +364,50 @@ async function searchNews(topic: string, firecrawlKey: string | undefined, perpl
 
 function pickByBias(articles: NewsArticle[], bias: 'left' | 'center' | 'right'): NewsArticle | undefined {
   return articles.find(a => a.bias === bias);
+}
+
+function normalizeText(s: string): string {
+  return (s || '')
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, ' ')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractKeywords(text: string): string[] {
+  const stop = new Set([
+    'the','a','an','and','or','but','to','of','in','on','for','with','from','by','at','as','is','are','was','were','be','been',
+    'this','that','these','those','it','its','their','they','them','he','she','his','her','you','your','we','our','us',
+    'calls','call','says','said','tells','told','latest','breaking','report','reports','news','video','live','update',
+  ]);
+  const tokens = normalizeText(text).split(' ').filter(Boolean);
+  const keywords = tokens
+    .filter(t => t.length >= 4 && !stop.has(t))
+    .slice(0, 20);
+  return Array.from(new Set(keywords));
+}
+
+function isFactCheckRelevant(opts: {
+  topic: string;
+  headline: string;
+  claimText: string;
+  reviewTitle: string;
+}): boolean {
+  const topicKeys = extractKeywords(opts.topic);
+  const headKeys = extractKeywords(opts.headline);
+  const keys = Array.from(new Set([...topicKeys, ...headKeys])).slice(0, 25);
+
+  const hay = normalizeText(`${opts.claimText} ${opts.reviewTitle}`);
+  if (!hay) return false;
+
+  // Must match at least one strong topic keyword, otherwise it's usually unrelated (e.g., generic outlet fact-checks)
+  const topicMatches = topicKeys.filter(k => hay.includes(k)).length;
+  if (topicKeys.length > 0 && topicMatches === 0) return false;
+
+  // Require at least 2 total keyword hits for confidence
+  const totalMatches = keys.filter(k => hay.includes(k)).length;
+  return totalMatches >= 2;
 }
 
 Deno.serve(async (req) => {
@@ -491,7 +553,8 @@ Deno.serve(async (req) => {
         if (!perspective.headline && !perspective.summary) return;
         
         try {
-          const query = perspective.headline || perspective.summary?.slice(0, 100);
+          // Query using topic + headline (more specific than headline alone)
+          const query = `${topic} ${perspective.headline || ''}`.trim();
           const encodedQuery = encodeURIComponent(query.slice(0, 150));
           const fcResponse = await fetch(
             `https://factchecktools.googleapis.com/v1alpha1/claims:search?query=${encodedQuery}&key=${factCheckApiKey}&languageCode=en`,
@@ -503,9 +566,17 @@ Deno.serve(async (req) => {
           const fcData = await fcResponse.json();
           const claims = fcData.claims || [];
           
-          for (const claim of claims.slice(0, 3)) {
+          for (const claim of claims.slice(0, 10)) {
             const review = claim.claimReview?.[0];
             if (!review || !review.url) continue;
+
+            const claimText = claim.text || '';
+            const reviewTitle = review.title || '';
+
+            // Filter out unrelated fact-checks (this is what caused Fox-host CBD type results)
+            if (!isFactCheckRelevant({ topic, headline: perspective.headline || '', claimText, reviewTitle })) {
+              continue;
+            }
             
             const rating = (review.textualRating || '').toLowerCase();
             let status = 'disputed';
@@ -521,6 +592,8 @@ Deno.serve(async (req) => {
               sourceUrl: review.url || '',
               title: review.title || '',
             });
+
+            if (perspective.factChecks.length >= 3) break;
           }
           
           console.log(`${perspective.perspective}: ${perspective.factChecks.length} fact-checks`);
