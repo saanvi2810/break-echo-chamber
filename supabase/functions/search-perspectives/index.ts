@@ -83,14 +83,15 @@ async function searchNewsByBias(
   perplexityKey: string,
   bias: 'left' | 'center' | 'right'
 ): Promise<NewsArticle[]> {
-  const siteFilters: Record<string, string> = {
-    left: 'site:theguardian.com OR site:msnbc.com OR site:huffpost.com OR site:vox.com OR site:slate.com OR site:thedailybeast.com OR site:nytimes.com OR site:washingtonpost.com OR site:cnn.com',
-    center: 'site:reuters.com OR site:apnews.com OR site:bbc.com OR site:npr.org OR site:axios.com OR site:thehill.com OR site:pbs.org',
-    right: 'site:foxnews.com OR site:wsj.com OR site:dailywire.com OR site:nypost.com OR site:washingtonexaminer.com OR site:nationalreview.com OR site:breitbart.com OR site:newsmax.com',
+  // Use simpler prompts that work better with Perplexity
+  const sourceDescriptions: Record<string, string> = {
+    left: 'CNN, MSNBC, The Guardian, Washington Post, New York Times, Vox, HuffPost, Slate, The Daily Beast',
+    center: 'Reuters, AP News, BBC, NPR, PBS, Axios, The Hill, USA Today',
+    right: 'Fox News, Wall Street Journal, New York Post, Washington Examiner, Daily Wire, National Review, Breitbart, Newsmax',
   };
 
-  const query = `${topic} news ${siteFilters[bias]}`;
-  console.log(`Searching ${bias} sources:`, query);
+  const query = `Find recent news articles about "${topic}" from these news sources: ${sourceDescriptions[bias]}. Only return articles from actual news websites, not government sites or press releases.`;
+  console.log(`Searching ${bias} sources for:`, topic);
 
   const response = await fetch('https://api.perplexity.ai/chat/completions', {
     method: 'POST',
@@ -102,12 +103,15 @@ async function searchNewsByBias(
       model: 'sonar',
       messages: [
         {
+          role: 'system',
+          content: `You are a news research assistant. Find real news articles from the specified sources only. Do not include government websites, press releases, or official announcements.`
+        },
+        {
           role: 'user',
-          content: `Find ALL recent news articles about "${topic}" ONLY from these specific news outlets: ${siteFilters[bias]}. Do not include any government sites, official sources, or other domains. Only news media.`
+          content: query
         }
       ],
       search_recency_filter: 'week',
-      search_domain_filter: validDomains[bias],
     }),
   });
 
@@ -123,16 +127,17 @@ async function searchNewsByBias(
   
   console.log(`${bias} search found ${citations.length} citations (before filtering)`);
 
-  // Extract articles from citations and STRICTLY filter to valid sources only
+  // Extract articles from citations and filter to valid sources
   const articles: NewsArticle[] = citations
     .filter((url: string) => {
       if (!url || typeof url !== 'string' || !url.startsWith('http')) return false;
-      // Strict check: only allow URLs from valid domains for this bias
+      // Check if URL is from a valid domain for this bias
       return isValidSourceForBias(url, bias);
     })
     .map((url: string) => {
       const outlet = detectOutletFromUrl(url);
       const urlDomain = new URL(url).hostname.replace('www.', '');
+      // Try to extract title from content
       const titleMatch = content.match(new RegExp(`["']([^"']{10,100})["'][^"']*${urlDomain.split('.')[0]}`, 'i'));
       
       return {
