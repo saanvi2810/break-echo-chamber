@@ -331,6 +331,18 @@ Deno.serve(async (req) => {
       console.log('Perplexity API key not configured, skipping real article search');
     }
 
+    // Hard stop: never let the AI fabricate outlets/URLs.
+    // If we couldn't find any verified, classified, real article URLs, return a clear error.
+    if (realArticles.length === 0) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: 'No verified articles found from the approved outlet lists for this topic. Try a broader query or a different topic.',
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     const currentDate = new Date().toLocaleDateString('en-US', { 
       year: 'numeric', 
       month: 'long', 
