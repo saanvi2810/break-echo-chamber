@@ -97,18 +97,49 @@ const domainsByBias: Record<'left' | 'center' | 'right', string[]> = {
   ],
 };
 
-async function searchNewsByBias(
-  topic: string,
-  perplexityKey: string,
-  bias: 'left' | 'center' | 'right'
-): Promise<NewsArticle[]> {
-  const allDomains = domainsByBias[bias];
-  // Use top 10 domains for explicit site: query (more reliable than search_domain_filter)
-  const topDomains = allDomains.slice(0, 10);
-  
-  console.log(`Searching ${bias} sources for: ${topic}`);
+// Classify a URL's bias based on our domain lists
+function classifyUrlBias(url: string): 'left' | 'center' | 'right' | null {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase().replace('www.', '');
+    
+    for (const domain of domainsByBias.left) {
+      if (hostname === domain || hostname.endsWith('.' + domain)) return 'left';
+    }
+    for (const domain of domainsByBias.center) {
+      if (hostname === domain || hostname.endsWith('.' + domain)) return 'center';
+    }
+    for (const domain of domainsByBias.right) {
+      if (hostname === domain || hostname.endsWith('.' + domain)) return 'right';
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
-  // Ask Perplexity to find and summarize actual articles
+// Check if URL looks like an article (not homepage, author page, etc.)
+function isArticlePath(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const path = u.pathname.toLowerCase();
+    
+    // Reject non-article paths
+    if (path === '/' || path === '') return false;
+    if (path.startsWith('/people') || path.startsWith('/author') || path.startsWith('/writers')) return false;
+    if (path.includes('/tag/') || path.includes('/tags/') || path.includes('/topic/') || path.includes('/topics/')) return false;
+    if (path.includes('/category/') || path.includes('/categories/') || path.includes('/section/')) return false;
+    
+    // Article paths usually have dates or specific slugs
+    return path.length > 10;
+  } catch {
+    return false;
+  }
+}
+
+// Single broad search that returns real citations, then classify by bias
+async function searchAllNews(topic: string, perplexityKey: string): Promise<NewsArticle[]> {
+  console.log(`Searching all news sources for: ${topic}`);
+
   const response = await fetch('https://api.perplexity.ai/chat/completions', {
     method: 'POST',
     headers: {
@@ -120,129 +151,75 @@ async function searchNewsByBias(
       messages: [
         {
           role: 'user',
-          content: `You are doing a web search.
-
-TOPIC: "${topic}"
-ALLOWED DOMAINS (ONLY use these): ${topDomains.join(', ')}
-
-Find up to 5 recent news articles about the topic from ONLY the allowed domains.
-
-Return each result with this exact format:
-- Headline: <headline>
-  Source: <outlet>
-  URL: <https://...>
-  Summary: <2-3 sentence factual summary of what the article reports>
-
-Rules:
-- Every result MUST include a real URL starting with https://
-- Do NOT include author bio pages, tag pages, category hubs, or homepages.
-- If you can't find any valid articles from the allowed domains, output exactly: NO_RESULTS`
+          content: `Find recent news articles about "${topic}". Provide a factual summary of what each source reports about this topic.`
         }
       ],
-      search_recency_filter: 'month', // Broader time range for better results
+      search_recency_filter: 'month',
     }),
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error(`Perplexity ${bias} search error:`, errorText);
+    console.error('Perplexity search error:', errorText);
     return [];
   }
 
   const data = await response.json();
+  const citations: string[] = data.citations || [];
   const content = data.choices?.[0]?.message?.content || '';
+  
+  console.log(`Search found ${citations.length} citations`);
+  console.log(`Content preview:`, content.slice(0, 300));
 
-  console.log(`${bias} content preview:`, content.slice(0, 500));
-
-  if (content.trim().toUpperCase().includes('NO_RESULTS')) {
-    console.log(`${bias} search: NO_RESULTS`);
-    return [];
-  }
-
-  // Extract real URLs from the model output (required)
-  const urlRegex = /https:\/\/[\w\-._~:/?#\[\]@!$&'()*+,;=%]+/g;
-  const urlsInText = Array.from(content.matchAll(urlRegex) as IterableIterator<RegExpMatchArray>)
-    .map((m: RegExpMatchArray) => m[0]);
-
-  const uniqueUrls: string[] = [];
-  for (const u of urlsInText) {
-    if (typeof u === 'string' && u.startsWith('https://') && !uniqueUrls.includes(u)) uniqueUrls.push(u);
-  }
-
-  const isAllowedUrl = (url: string) => {
-    try {
-      const hostname = new URL(url).hostname.toLowerCase().replace('www.', '');
-      return topDomains.some((d) => hostname === d.replace('www.', '') || hostname.endsWith('.' + d.replace('www.', '')));
-    } catch {
-      return false;
+  const articles: NewsArticle[] = [];
+  
+  for (const url of citations) {
+    if (!url || typeof url !== 'string' || !url.startsWith('http')) continue;
+    if (!isArticlePath(url)) {
+      console.log(`Skipping non-article URL: ${url}`);
+      continue;
     }
-  };
-
-  const isNonArticlePath = (url: string) => {
-    try {
-      const u = new URL(url);
-      const path = u.pathname.toLowerCase();
-      return (
-        path === '/' ||
-        path.startsWith('/people') ||
-        path.startsWith('/author') ||
-        path.includes('/tag/') ||
-        path.includes('/tags/') ||
-        path.includes('/topic/') ||
-        path.includes('/topics/') ||
-        path.includes('/category/') ||
-        path.includes('/categories/') ||
-        path.includes('/section/')
-      );
-    } catch {
-      return true;
+    
+    const bias = classifyUrlBias(url);
+    if (!bias) {
+      console.log(`Skipping unclassified URL: ${url}`);
+      continue;
     }
-  };
-
-  const validUrls = uniqueUrls.filter((u) => isAllowedUrl(u) && !isNonArticlePath(u));
-
-  console.log(`${bias} url candidates: total=${uniqueUrls.length}, valid=${validUrls.length}`);
-  if (uniqueUrls.length > 0) {
-    console.log(`${bias} sample urls:`, uniqueUrls.slice(0, 5));
-  }
-
-  const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-  const articles: NewsArticle[] = validUrls.slice(0, 8).map((url) => {
+    
     const outlet = detectOutletFromUrl(url);
-
-    const titleMatch = content.match(
-      new RegExp(`Headline:\\s*(.+)\\n\\s*Source:[^\\n]*\\n\\s*URL:\\s*${escapeRegExp(url)}`, 'i')
-    );
-    const summaryMatch = content.match(
-      new RegExp(`URL:\\s*${escapeRegExp(url)}[\\s\\S]*?Summary:\\s*([^\n]+(?:\\n(?!- Headline:)[^\n]+)*)`, 'i')
-    );
-
-    return {
+    
+    // Try to extract summary for this source from content
+    const outletLower = outlet.toLowerCase();
+    const summaryPatterns = [
+      new RegExp(`${outletLower}[^.]*(?:reports?|says?|states?)[^.]+\\.`, 'i'),
+      new RegExp(`according to ${outletLower}[^.]+\\.`, 'i'),
+    ];
+    
+    let snippet = '';
+    for (const pattern of summaryPatterns) {
+      const match = content.match(pattern);
+      if (match) {
+        snippet = match[0].trim();
+        break;
+      }
+    }
+    
+    articles.push({
       url,
-      title: titleMatch?.[1]?.trim() || `Article from ${outlet}`,
+      title: `Article from ${outlet}`,
       outlet,
-      snippet: (summaryMatch?.[1]?.trim() || '').slice(0, 500),
+      snippet,
       bias,
-    };
-  });
-
-  console.log(`${bias} search: ${articles.length} articles extracted`);
+    });
+  }
+  
+  console.log(`Classified articles: left=${articles.filter(a => a.bias === 'left').length}, center=${articles.filter(a => a.bias === 'center').length}, right=${articles.filter(a => a.bias === 'right').length}`);
   return articles;
 }
 
 async function searchNews(topic: string, perplexityKey: string): Promise<NewsArticle[]> {
-  console.log('Searching news with Perplexity for diverse sources:', topic);
-
-  // Search each bias category sequentially (turns) for more predictable behavior
-  const leftArticles = await searchNewsByBias(topic, perplexityKey, 'left');
-  const centerArticles = await searchNewsByBias(topic, perplexityKey, 'center');
-  const rightArticles = await searchNewsByBias(topic, perplexityKey, 'right');
-
-  const allArticles = [...leftArticles, ...centerArticles, ...rightArticles];
-  console.log(`Total articles found: ${allArticles.length} (left: ${leftArticles.length}, center: ${centerArticles.length}, right: ${rightArticles.length})`);
-  
-  return allArticles;
+  // Use single broad search and classify results by bias
+  return await searchAllNews(topic, perplexityKey);
 }
 
 function pickByBias(articles: NewsArticle[], bias: 'left' | 'center' | 'right'): NewsArticle | undefined {
