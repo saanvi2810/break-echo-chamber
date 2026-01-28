@@ -137,7 +137,7 @@ const PerspectiveCard = ({
         {articleUrl && articleUrl.startsWith("http") ? (
           <a
             href={articleUrl}
-            target="_blank"
+            target="_top"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline mt-auto"
           >
