@@ -49,6 +49,8 @@ function isNonRetryableError(error: Error): boolean {
   const nonRetryableMessages = [
     'Topic is required',
     'Invalid request',
+    // When we explicitly couldn't find any verified articles, retrying won't help.
+    'No verified articles found',
   ];
   return nonRetryableMessages.some((msg) => error.message.includes(msg));
 }

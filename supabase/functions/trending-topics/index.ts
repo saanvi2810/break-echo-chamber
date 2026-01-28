@@ -23,8 +23,9 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log('Fetching trending topics from Perplexity...');
+    console.log('Fetching trending topics from Perplexity (grounded w/ citations)...');
 
+    // IMPORTANT: We require a sourceUrl per topic, and we only accept topics with real URLs.
     const response = await fetch('https://api.perplexity.ai/chat/completions', {
       method: 'POST',
       headers: {
@@ -35,12 +36,42 @@ Deno.serve(async (req) => {
         model: 'sonar',
         messages: [
           {
+            role: 'system',
+            content: 'Return strictly valid JSON. Do not invent sources. Each topic must include a real, working news URL.',
+          },
+          {
             role: 'user',
-            content: `What are 5 specific, politically divisive or controversial news stories being debated TODAY? Focus on topics where left-wing and right-wing media have opposing takes. Be specific (e.g., "Trump's Tariff Policy" not just "Economy"). Return ONLY a JSON array of 5 specific topic names (3-6 words each), no explanation. Example: ["Biden's Border Executive Order", "Tesla Union Vote Results", "TikTok Ban Supreme Court"]`
-          }
+            content:
+              'Find 5 politically divisive or controversial news stories being debated today. For each, return a short topic (3–8 words) and one real source URL from a reputable news outlet. Return only JSON like: {"topics":[{"topic":"...","sourceUrl":"https://..."}]}',
+          },
         ],
-        temperature: 0.5,
+        temperature: 0.2,
         search_recency_filter: 'day',
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'trending_topics',
+            schema: {
+              type: 'object',
+              properties: {
+                topics: {
+                  type: 'array',
+                  minItems: 1,
+                  maxItems: 5,
+                  items: {
+                    type: 'object',
+                    properties: {
+                      topic: { type: 'string' },
+                      sourceUrl: { type: 'string' },
+                    },
+                    required: ['topic', 'sourceUrl'],
+                  },
+                },
+              },
+              required: ['topics'],
+            },
+          },
+        },
       }),
     });
 
@@ -58,32 +89,42 @@ Deno.serve(async (req) => {
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content || '';
     
-    // Parse the JSON array from the response
-    let topics: string[] = [];
+    type TopicItem = { topic: string; sourceUrl: string };
+    let items: TopicItem[] = [];
     try {
-      const jsonMatch = content.match(/\[[\s\S]*?\]/);
-      if (jsonMatch) {
-        topics = JSON.parse(jsonMatch[0]);
-      }
+      items = JSON.parse(content)?.topics ?? [];
     } catch (parseError) {
-      console.error('Failed to parse topics:', content);
+      console.error('Failed to parse topics JSON:', content);
     }
 
-    // Ensure we have valid topics
-    if (!Array.isArray(topics) || topics.length === 0) {
-      topics = ["Breaking News", "Politics", "Technology", "Economy", "Climate"];
+    // Validate URLs & topics; only accept items with real URLs.
+    const topics = (Array.isArray(items) ? items : [])
+      .filter((it): it is TopicItem => !!it && typeof it.topic === 'string' && typeof it.sourceUrl === 'string')
+      .map((it) => ({ topic: it.topic.trim(), sourceUrl: it.sourceUrl.trim() }))
+      .filter((it) => it.topic.length > 0)
+      .filter((it) => {
+        try {
+          const u = new URL(it.sourceUrl);
+          return u.protocol === 'https:' || u.protocol === 'http:';
+        } catch {
+          return false;
+        }
+      })
+      .slice(0, 5);
+
+    const topicNames = topics.map((t) => t.topic);
+
+    const finalTopics = topicNames.length > 0
+      ? topicNames
+      : ["Breaking News", "Politics", "Technology", "Economy", "Climate"];
+
+    console.log('Trending topics (validated):', finalTopics);
+    if (topics.length > 0) {
+      console.log('Trending topic sources:', topics.map((t) => t.sourceUrl));
     }
-
-    // Clean up and limit to 5 topics
-    topics = topics
-      .filter((t): t is string => typeof t === 'string' && t.length > 0)
-      .slice(0, 5)
-      .map(t => t.trim());
-
-    console.log('Trending topics:', topics);
 
     return new Response(
-      JSON.stringify({ success: true, topics }),
+      JSON.stringify({ success: true, topics: finalTopics }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
