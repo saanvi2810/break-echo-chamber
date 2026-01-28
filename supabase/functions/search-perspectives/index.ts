@@ -62,22 +62,38 @@ function detectBias(outlet: string, url: string): 'left' | 'center' | 'right' {
   return 'center';
 }
 
-// Domain lists for each bias category (max 20 per Perplexity API limit)
+// Domain lists based on AllSides Media Bias Chart (max 20 per Perplexity API limit)
+// LEFT = Left + Lean Left sources
+// CENTER = Center sources  
+// RIGHT = Lean Right + Right sources
 const domainsByBias: Record<'left' | 'center' | 'right', string[]> = {
+  // Left + Lean Left (AllSides chart)
   left: [
-    'theguardian.com', 'msnbc.com', 'huffpost.com', 'vox.com', 'slate.com',
-    'thedailybeast.com', 'motherjones.com', 'theintercept.com', 'thenation.com',
-    'democracynow.org', 'theatlantic.com', 'newyorker.com', 'jacobin.com', 'alternet.org'
+    'alternet.org', 'apnews.com', 'theatlantic.com', 'thedailybeast.com', 'democracynow.org',
+    'theguardian.com', 'huffpost.com', 'theintercept.com', 'jacobin.com', 'motherjones.com',
+    'msnbc.com', 'thenation.com', 'newyorker.com', 'slate.com', 'vox.com',
+    // Lean Left
+    'abcnews.go.com', 'axios.com', 'bloomberg.com', 'cbsnews.com', 'cnbc.com',
+    'cnn.com', 'insider.com', 'businessinsider.com', 'thehill.com', 'nbcnews.com',
+    'nytimes.com', 'npr.org', 'politico.com', 'propublica.org', 'semafor.com',
+    'time.com', 'usatoday.com', 'washingtonpost.com', 'news.yahoo.com'
   ],
+  // Center (AllSides chart)
   center: [
-    'reuters.com', 'apnews.com', 'bbc.com', 'npr.org', 'axios.com',
-    'thehill.com', 'newsweek.com', 'csmonitor.com', 'forbes.com', 'tangle.media',
-    'reason.com', 'morningbrew.com'
+    '1440.io', 'bbc.com', 'csmonitor.com', 'forbes.com', 'marketwatch.com',
+    'morningbrew.com', 'newsnationnow.com', 'newsweek.com', 'reason.com',
+    'reuters.com', 'tangle.media', 'wsj.com'
   ],
+  // Lean Right + Right (AllSides chart)
   right: [
-    'foxnews.com', 'wsj.com', 'dailywire.com', 'nypost.com', 'washingtonexaminer.com',
-    'nationalreview.com', 'breitbart.com', 'dailycaller.com', 'thefederalist.com',
-    'newsmax.com', 'theblaze.com', 'freebeacon.com', 'epochtimes.com'
+    // Lean Right
+    'dailymail.co.uk', 'thedispatch.com', 'theepochtimes.com', 'foxbusiness.com',
+    'thefp.com', 'justthenews.com', 'nationalreview.com', 'nypost.com',
+    'realclearpolitics.com', 'upward.news', 'washingtonexaminer.com', 'washingtontimes.com', 'zerohedge.com',
+    // Right
+    'theamericanconservative.com', 'spectator.org', 'theblaze.com', 'breitbart.com',
+    'cbn.com', 'dailycaller.com', 'dailywire.com', 'foxnews.com', 'thefederalist.com',
+    'ijr.com', 'newsmax.com', 'oann.com', 'thepostmillennial.com', 'freebeacon.com'
   ],
 };
 
@@ -86,7 +102,9 @@ async function searchNewsByBias(
   perplexityKey: string,
   bias: 'left' | 'center' | 'right'
 ): Promise<NewsArticle[]> {
-  const domains = domainsByBias[bias];
+  const allDomains = domainsByBias[bias];
+  // Perplexity has max 20 domain filter limit - use first 20 for primary search
+  const domains = allDomains.slice(0, 20);
   
   console.log(`Searching ${bias} sources for: ${topic} domains: ${domains.join(', ')}`);
 
@@ -121,15 +139,15 @@ async function searchNewsByBias(
   
   console.log(`${bias} search found ${citations.length} citations`);
 
-  // Filter citations to only include URLs from our domain list
-  const validDomains = new Set(domains.map(d => d.toLowerCase()));
+  // Accept URLs from ALL domains in our full list (not just the 20 used in filter)
+  const validDomainsSet = new Set(allDomains.map(d => d.toLowerCase()));
   
   const articles: NewsArticle[] = citations
     .filter((url: string) => {
       if (!url || typeof url !== 'string' || !url.startsWith('http')) return false;
       try {
         const hostname = new URL(url).hostname.toLowerCase().replace('www.', '');
-        return validDomains.has(hostname) || Array.from(validDomains).some(d => hostname.includes(d.replace('www.', '')));
+        return validDomainsSet.has(hostname) || Array.from(validDomainsSet).some(d => hostname.includes(d.replace('www.', '')));
       } catch {
         return false;
       }
