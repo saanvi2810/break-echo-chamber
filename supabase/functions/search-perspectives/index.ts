@@ -82,16 +82,16 @@ async function searchNewsByBias(
       'Authorization': `Bearer ${perplexityKey}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      model: 'sonar',
-      messages: [
-        {
-          role: 'user',
-          content: `Find the most recent news article about "${topic}" from these sources: ${siteFilters[bias]}. Just tell me what you found.`
-        }
-      ],
-      search_recency_filter: 'week',
-    }),
+      body: JSON.stringify({
+        model: 'sonar',
+        messages: [
+          {
+            role: 'user',
+            content: `Find ALL recent news articles about "${topic}" from these sources: ${siteFilters[bias]}. List every article you can find with their headlines.`
+          }
+        ],
+        search_recency_filter: 'week',
+      }),
   });
 
   if (!response.ok) {
@@ -245,22 +245,31 @@ Deno.serve(async (req) => {
       day: 'numeric' 
     });
 
-    // Build strict URL list for the AI (we'll also enforce after parsing)
+    // Group articles by bias
+    const leftArticles = realArticles.filter(a => a.bias === 'left');
+    const centerArticles = realArticles.filter(a => a.bias === 'center');
+    const rightArticles = realArticles.filter(a => a.bias === 'right');
+
+    // Build article lists for AI context
+    const formatArticleList = (articles: NewsArticle[], label: string) => 
+      articles.length > 0 
+        ? `\n${label} ARTICLES:\n${articles.map((a, i) => `${i + 1}. ${a.outlet}: ${a.title} :: ${a.url}`).join('\n')}`
+        : '';
+
     const articleContext = realArticles.length > 0
-      ? `\n\nREAL ARTICLES (ONLY use these exact URLs):\n${realArticles
-          .slice(0, 12)
-          .map((a) => `- [${(a.bias || 'center').toUpperCase()}] ${a.outlet}: ${a.title} :: ${a.url}`)
-          .join('\n')}`
+      ? formatArticleList(leftArticles, 'LEFT') + 
+        formatArticleList(centerArticles, 'CENTER') + 
+        formatArticleList(rightArticles, 'RIGHT')
       : '';
 
     const systemPrompt = `You are a news analyst that provides balanced, multi-perspective coverage of current events. 
-For any topic, you must provide exactly 3 perspectives: progressive/left-leaning, centrist/balanced, and conservative/right-leaning.
+For any topic, you must provide 3 perspective groups with ALL available articles for each: progressive/left-leaning, centrist/balanced, and conservative/right-leaning.
 
 TODAY'S DATE IS: ${currentDate}
 ${articleContext}
 
 IMPORTANT: You must respond with valid JSON only. No markdown, no code blocks, just raw JSON.
-${realArticles.length > 0 ? 'CRITICAL: You MUST choose articleUrl ONLY from the REAL ARTICLES list above. Never invent URLs.' : ''}
+${realArticles.length > 0 ? 'CRITICAL: Include ALL articles from each perspective group. Use the exact URLs provided.' : ''}
 
 The JSON must follow this exact structure:
 {
@@ -274,29 +283,41 @@ The JSON must follow this exact structure:
     {
       "perspective": "left",
       "label": "Progressive View",
-      "outlet": "Name of the actual outlet",
-      "headline": "The actual headline from the article",
-      "summary": "2-3 sentence summary based on the actual article content",
-      "timeAgo": "Recently",
-      "articleUrl": "The real URL from the articles above"
+      "articles": [
+        {
+          "outlet": "Name of the outlet",
+          "headline": "The actual headline",
+          "summary": "1-2 sentence summary",
+          "timeAgo": "Recently",
+          "articleUrl": "The real URL"
+        }
+      ]
     },
     {
       "perspective": "center",
       "label": "Balanced Analysis",
-      "outlet": "Name of the actual outlet",
-      "headline": "The actual headline from the article",
-      "summary": "2-3 sentence summary based on the actual article content",
-      "timeAgo": "Recently",
-      "articleUrl": "The real URL from the articles above"
+      "articles": [
+        {
+          "outlet": "Name of the outlet",
+          "headline": "The actual headline",
+          "summary": "1-2 sentence summary",
+          "timeAgo": "Recently",
+          "articleUrl": "The real URL"
+        }
+      ]
     },
     {
       "perspective": "right",
-      "label": "Conservative View", 
-      "outlet": "Name of the actual outlet",
-      "headline": "The actual headline from the article",
-      "summary": "2-3 sentence summary based on the actual article content",
-      "timeAgo": "Recently",
-      "articleUrl": "The real URL from the articles above"
+      "label": "Conservative View",
+      "articles": [
+        {
+          "outlet": "Name of the outlet",
+          "headline": "The actual headline",
+          "summary": "1-2 sentence summary",
+          "timeAgo": "Recently",
+          "articleUrl": "The real URL"
+        }
+      ]
     }
   ]
 }`;
@@ -353,8 +374,23 @@ The JSON must follow this exact structure:
       );
     }
 
-    // Enforce real URLs (prevents hallucinated/fake links)
-    enforceRealArticleUrls(parsedContent, realArticles);
+    // Enforce real URLs on articles within each perspective
+    if (parsedContent?.perspectives && realArticles.length > 0) {
+      const urlsByBias: Record<string, Set<string>> = {
+        left: new Set(realArticles.filter(a => a.bias === 'left').map(a => a.url)),
+        center: new Set(realArticles.filter(a => a.bias === 'center').map(a => a.url)),
+        right: new Set(realArticles.filter(a => a.bias === 'right').map(a => a.url)),
+      };
+      
+      parsedContent.perspectives.forEach((p: any) => {
+        const validUrls = urlsByBias[p.perspective] || new Set();
+        if (p.articles && Array.isArray(p.articles)) {
+          p.articles = p.articles.filter((article: any) => 
+            article.articleUrl && validUrls.has(article.articleUrl)
+          );
+        }
+      });
+    }
 
     // Search for fact-checks for EACH article's specific content
     // Uses Google Fact Check API to find real fact-checks from Snopes, PolitiFact, etc.
@@ -363,43 +399,34 @@ The JSON must follow this exact structure:
     if (factCheckApiKey && parsedContent?.perspectives?.length > 0) {
       console.log('Searching fact-checks for each article...');
       
-      // Process each perspective in parallel
-      await Promise.all(parsedContent.perspectives.map(async (perspective: any) => {
-        perspective.factChecks = []; // Initialize empty array
+      // Process each perspective and its articles
+      for (const perspective of parsedContent.perspectives) {
+        if (!perspective.articles || !Array.isArray(perspective.articles)) continue;
         
-        if (!perspective.headline && !perspective.summary) return;
-        
-        try {
-          // Search using headline first
-          const queries = [perspective.headline];
+        // Process articles in parallel within each perspective
+        await Promise.all(perspective.articles.map(async (article: any) => {
+          article.factChecks = [];
           
-          // Add first sentence of summary as secondary query
-          if (perspective.summary) {
-            const firstSentence = perspective.summary.split(/[.!?]/)[0]?.trim();
-            if (firstSentence && firstSentence.length > 20 && firstSentence !== perspective.headline) {
-              queries.push(firstSentence);
-            }
-          }
+          if (!article.headline) return;
           
-          const seenUrls = new Set<string>();
-          
-          for (const query of queries) {
-            const encodedQuery = encodeURIComponent(query.slice(0, 150));
+          try {
+            const encodedQuery = encodeURIComponent(article.headline.slice(0, 150));
             const fcResponse = await fetch(
               `https://factchecktools.googleapis.com/v1alpha1/claims:search?query=${encodedQuery}&key=${factCheckApiKey}&languageCode=en`,
               { method: 'GET' }
             );
             
-            if (!fcResponse.ok) continue;
+            if (!fcResponse.ok) return;
             
             const fcData = await fcResponse.json();
             const claims = fcData.claims || [];
             
-            for (const claim of claims) {
+            const seenUrls = new Set<string>();
+            
+            for (const claim of claims.slice(0, 2)) {
               const review = claim.claimReview?.[0];
               if (!review || !review.url) continue;
               
-              // Deduplicate by URL
               if (seenUrls.has(review.url)) continue;
               seenUrls.add(review.url);
               
@@ -413,7 +440,7 @@ The JSON must follow this exact structure:
                 status = 'disputed';
               }
               
-              perspective.factChecks.push({
+              article.factChecks.push({
                 claimText: claim.text || '',
                 claimant: claim.claimant || 'Unknown',
                 rating: review.textualRating || '',
@@ -423,20 +450,20 @@ The JSON must follow this exact structure:
                 title: review.title || '',
               });
             }
+          } catch (fcError) {
+            console.error(`Fact-check error for article:`, fcError);
           }
-          
-          // Limit to 3 fact-checks per article
-          perspective.factChecks = perspective.factChecks.slice(0, 3);
-          console.log(`${perspective.perspective} article: ${perspective.factChecks.length} fact-checks found`);
-          
-        } catch (fcError) {
-          console.error(`Fact-check error for ${perspective.perspective}:`, fcError);
-        }
-      }));
+        }));
+      }
+      
+      const totalArticles = parsedContent.perspectives.reduce((sum: number, p: any) => sum + (p.articles?.length || 0), 0);
+      console.log(`Processed fact-checks for ${totalArticles} articles`);
     } else if (!factCheckApiKey) {
       console.log('Google Fact Check API key not configured');
-      // Initialize empty factChecks arrays
-      parsedContent.perspectives?.forEach((p: any) => { p.factChecks = []; });
+      // Initialize empty factChecks arrays for all articles
+      parsedContent.perspectives?.forEach((p: any) => {
+        p.articles?.forEach((a: any) => { a.factChecks = []; });
+      });
     }
 
     console.log('Successfully analyzed topic with real articles');
