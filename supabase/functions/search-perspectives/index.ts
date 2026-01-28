@@ -155,20 +155,31 @@ function detectBias(outlet: string, url: string): 'left' | 'center' | 'right' {
   return 'center';
 }
 
-// Valid domains for each bias - used for strict filtering
+// Valid domains for each bias - expanded for better coverage
 const validDomains: Record<string, string[]> = {
   left: [
+    // mainstream left-leaning + major broadcast/newsroom sites
     'theguardian.com', 'msnbc.com', 'huffpost.com', 'vox.com', 'slate.com', 'thedailybeast.com',
     'motherjones.com', 'theatlantic.com', 'nytimes.com', 'washingtonpost.com', 'cnn.com',
-    // major broadcast/newsroom sites frequently cited by Perplexity
     'nbcnews.com', 'abcnews.go.com', 'cbsnews.com',
+    // expanded list
+    'salon.com', 'thenation.com', 'newyorker.com', 'latimes.com', 'bostonglobe.com',
+    'talkingpointsmemo.com', 'prospect.org', 'commondreams.org', 'democracynow.org',
   ],
   center: [
+    // wire services + mainstream centrist outlets
     'reuters.com', 'apnews.com', 'bbc.com', 'npr.org', 'axios.com', 'thehill.com', 'pbs.org', 'usatoday.com',
-    // often returned for policy/government coverage
     'politico.com',
+    // expanded list
+    'csmonitor.com', 'bloomberg.com', 'ft.com', 'economist.com', 'time.com', 'newsweek.com',
+    'abcnews.go.com', 'cbsnews.com', 'nbcnews.com', // overlap is intentional; center can cite major broadcast
   ],
-  right: ['foxnews.com', 'wsj.com', 'dailywire.com', 'nypost.com', 'washingtonexaminer.com', 'nationalreview.com', 'breitbart.com', 'theblaze.com', 'dailycaller.com', 'newsmax.com'],
+  right: [
+    'foxnews.com', 'wsj.com', 'dailywire.com', 'nypost.com', 'washingtonexaminer.com', 'nationalreview.com',
+    'breitbart.com', 'theblaze.com', 'dailycaller.com', 'newsmax.com',
+    // expanded list
+    'townhall.com', 'thefederalist.com', 'freebeacon.com', 'spectator.org', 'pjmedia.com', 'americanthinker.com', 'oann.com',
+  ],
 };
 
 function isValidSourceForBias(url: string, bias: 'left' | 'center' | 'right'): boolean {
@@ -237,9 +248,9 @@ async function searchNewsByBias(
   //    then apply our own allowlist filtering.
 
   const siteFilters: Record<string, string> = {
-    left: 'site:theguardian.com OR site:msnbc.com OR site:huffpost.com OR site:vox.com OR site:slate.com OR site:thedailybeast.com OR site:motherjones.com OR site:theatlantic.com OR site:nytimes.com OR site:washingtonpost.com OR site:cnn.com OR site:nbcnews.com OR site:abcnews.go.com OR site:cbsnews.com',
-    center: 'site:reuters.com OR site:apnews.com OR site:bbc.com OR site:npr.org OR site:axios.com OR site:thehill.com OR site:pbs.org OR site:usatoday.com OR site:politico.com',
-    right: 'site:foxnews.com OR site:wsj.com OR site:dailywire.com OR site:nypost.com OR site:washingtonexaminer.com OR site:nationalreview.com OR site:breitbart.com OR site:newsmax.com',
+    left: validDomains.left.map((d) => `site:${d}`).join(' OR '),
+    center: validDomains.center.map((d) => `site:${d}`).join(' OR '),
+    right: validDomains.right.map((d) => `site:${d}`).join(' OR '),
   };
 
   const desiredCount = 6;
