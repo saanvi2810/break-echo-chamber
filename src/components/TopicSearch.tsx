@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Search, Loader2, WifiOff, RefreshCw } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { supabase } from "@/integrations/supabase/client";
 
 interface TopicSearchProps {
   onSearch: (topic: string) => void;
@@ -21,6 +22,28 @@ const TopicSearch = ({
   onRetry 
 }: TopicSearchProps) => {
   const [searchTerm, setSearchTerm] = useState("");
+  const [trendingTopics, setTrendingTopics] = useState<string[]>([]);
+  const [loadingTopics, setLoadingTopics] = useState(true);
+
+  useEffect(() => {
+    const fetchTrendingTopics = async () => {
+      try {
+        const { data, error } = await supabase.functions.invoke('trending-topics');
+        if (error) throw error;
+        if (data?.topics && Array.isArray(data.topics)) {
+          setTrendingTopics(data.topics);
+        }
+      } catch (err) {
+        console.error('Failed to fetch trending topics:', err);
+        // Fallback topics
+        setTrendingTopics(["Breaking News", "Politics", "Technology", "Economy", "Climate"]);
+      } finally {
+        setLoadingTopics(false);
+      }
+    };
+
+    fetchTrendingTopics();
+  }, []);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -28,14 +51,6 @@ const TopicSearch = ({
       onSearch(searchTerm.trim());
     }
   };
-
-  const suggestedTopics = [
-    "Climate Change Policy",
-    "Immigration Reform",
-    "Healthcare Costs",
-    "Tech Regulation",
-    "Economic Outlook",
-  ];
 
   const getLoadingText = () => {
     if (retryAttempt > 0) {
@@ -98,21 +113,25 @@ const TopicSearch = ({
         </div>
       )}
 
-      <div className="mt-4 flex flex-wrap gap-2 justify-center">
-        <span className="text-sm text-muted-foreground">Try:</span>
-        {suggestedTopics.map((topic) => (
-          <button
-            key={topic}
-            onClick={() => {
-              setSearchTerm(topic);
-              onSearch(topic);
-            }}
-            disabled={isLoading}
-            className="text-sm px-3 py-1 rounded-full bg-secondary hover:bg-accent transition-colors disabled:opacity-50"
-          >
-            {topic}
-          </button>
-        ))}
+      <div className="mt-4 flex flex-wrap gap-2 justify-center items-center">
+        <span className="text-sm text-muted-foreground">Trending:</span>
+        {loadingTopics ? (
+          <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+        ) : (
+          trendingTopics.map((topic) => (
+            <button
+              key={topic}
+              onClick={() => {
+                setSearchTerm(topic);
+                onSearch(topic);
+              }}
+              disabled={isLoading}
+              className="text-sm px-3 py-1 rounded-full bg-secondary hover:bg-accent transition-colors disabled:opacity-50"
+            >
+              {topic}
+            </button>
+          ))
+        )}
       </div>
     </div>
   );
