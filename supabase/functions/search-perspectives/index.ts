@@ -151,17 +151,15 @@ function isArticlePath(url: string): boolean {
   }
 }
 
-// Search a specific bias category by constraining to those domains
-async function searchByBias(
-  topic: string, 
+// Search a specific domain batch for a bias category
+async function searchDomainBatch(
+  topic: string,
   bias: 'left' | 'center' | 'right',
-  perplexityKey: string
+  domains: string[],
+  perplexityKey: string,
+  batchNum: number
 ): Promise<NewsArticle[]> {
-  const domains = domainsByBias[bias];
-  // Perplexity limits to 5 domains per request, so pick top ones
-  const topDomains = domains.slice(0, 5);
-  
-  console.log(`Searching ${bias} sources for: ${topic} (domains: ${topDomains.join(', ')})`);
+  console.log(`[${bias} batch ${batchNum}] Searching domains: ${domains.join(', ')}`);
 
   const response = await fetch('https://api.perplexity.ai/chat/completions', {
     method: 'POST',
@@ -178,13 +176,13 @@ async function searchByBias(
         }
       ],
       search_recency_filter: 'week',
-      search_domain_filter: topDomains,
+      search_domain_filter: domains,
     }),
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error(`Perplexity ${bias} search error:`, errorText);
+    console.error(`[${bias} batch ${batchNum}] Perplexity error:`, errorText);
     return [];
   }
 
@@ -192,17 +190,19 @@ async function searchByBias(
   const citations: string[] = data.citations || [];
   const content = data.choices?.[0]?.message?.content || '';
   
-  console.log(`${bias} search found ${citations.length} citations`);
-  if (citations.length > 0) {
-    console.log(`${bias} citations:`, citations.slice(0, 3));
-  }
+  console.log(`[${bias} batch ${batchNum}] Found ${citations.length} citations`);
 
   const articles: NewsArticle[] = [];
   
   for (const url of citations) {
-    if (!url || typeof url !== 'string' || !url.startsWith('http')) continue;
+    if (!url || typeof url !== 'string' || !url.startsWith('http')) {
+      console.log(`[${bias} batch ${batchNum}] Invalid URL format: ${url}`);
+      continue;
+    }
+    
+    // CRITICAL: Validate this is a real article path, not homepage/author/tag page
     if (!isArticlePath(url)) {
-      console.log(`Skipping non-article URL: ${url}`);
+      console.log(`[${bias} batch ${batchNum}] Skipping non-article URL: ${url}`);
       continue;
     }
     
@@ -238,8 +238,45 @@ async function searchByBias(
     });
   }
   
-  console.log(`${bias} articles found: ${articles.length}`);
+  console.log(`[${bias} batch ${batchNum}] Valid articles: ${articles.length}`);
   return articles;
+}
+
+// Search a specific bias category with MULTIPLE batches (3 batches × 5 domains = 15 domains total)
+async function searchByBias(
+  topic: string, 
+  bias: 'left' | 'center' | 'right',
+  perplexityKey: string
+): Promise<NewsArticle[]> {
+  const domains = domainsByBias[bias];
+  
+  // Perplexity limits to 5 domains per request
+  // Split into 3 batches of 5 domains each (15 domains total per bias)
+  const batch1 = domains.slice(0, 5);
+  const batch2 = domains.slice(5, 10);
+  const batch3 = domains.slice(10, 15);
+  
+  console.log(`Searching ${bias} sources with 3 parallel batches (15 domains total)`);
+  
+  // Run all 3 batches in parallel
+  const [articles1, articles2, articles3] = await Promise.all([
+    searchDomainBatch(topic, bias, batch1, perplexityKey, 1),
+    searchDomainBatch(topic, bias, batch2, perplexityKey, 2),
+    searchDomainBatch(topic, bias, batch3, perplexityKey, 3),
+  ]);
+  
+  const allArticles = [...articles1, ...articles2, ...articles3];
+  
+  // Deduplicate by URL
+  const seenUrls = new Set<string>();
+  const uniqueArticles = allArticles.filter(article => {
+    if (seenUrls.has(article.url)) return false;
+    seenUrls.add(article.url);
+    return true;
+  });
+  
+  console.log(`${bias} total: ${uniqueArticles.length} unique articles from ${allArticles.length} results`);
+  return uniqueArticles;
 }
 
 // Search all three bias categories in parallel
