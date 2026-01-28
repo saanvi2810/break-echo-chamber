@@ -109,7 +109,6 @@ function getBiasForUrl(url: string): 'left' | 'center' | 'right' | null {
   try {
     const hostname = new URL(url).hostname.toLowerCase().replace('www.', '');
     if (domainToBias[hostname]) return domainToBias[hostname];
-    // Check if hostname ends with known domain
     for (const d of Object.keys(domainToBias)) {
       if (hostname.endsWith('.' + d)) return domainToBias[d];
     }
@@ -119,123 +118,262 @@ function getBiasForUrl(url: string): 'left' | 'center' | 'right' | null {
   }
 }
 
-function cleanSnippet(markdown: string | undefined, description: string | undefined, title: string): string {
-  if (markdown) {
-    const cleanText = String(markdown)
-      .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
-      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-      .replace(/#{1,6}\s*/g, '')
-      .replace(/[*_`~]/g, '')
-      .replace(/\n+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+// ============ GOOGLE CUSTOM SEARCH API (PRIMARY) ============
 
-    const skipPatterns = [
-      /^(skip to|accessibility|enable accessibility|navigation|menu|search)/i,
-      /^(left arrow|right arrow|previous|next)/i,
-      /^\d+$/,
-      /^(markets|dow|s&p|nasdaq|hot stocks)/i,
-      /\b(markets|dow|s&p|nasdaq)\b/i,
-      /\d+[.,]\d+[%\-+]/i,
-      /^(by\s+\w+\s+(staff|reporter|contributor))/i,
-      /^(follow\s+(author|us|me))/i,
-      /^(breaking|trending|popular|featured)/i,
-      /^(advertisement|sponsored|promoted)/i,
-    ];
+async function searchGoogleCSE(
+  topic: string,
+  bias: 'left' | 'center' | 'right',
+  googleApiKey: string,
+  googleCseId: string
+): Promise<NewsArticle[]> {
+  const domains = domainsByBias[bias];
+  const topicClean = String(topic).replace(/["""]/g, '').trim();
+  
+  // Google CSE allows site restriction via siteSearch parameter or in query
+  // We'll use the query approach with site: operators
+  const siteFilters = domains.slice(0, 5).map(d => `site:${d}`).join(' OR ');
+  const query = `${topicClean} (${siteFilters})`;
+  
+  const params = new URLSearchParams({
+    key: googleApiKey,
+    cx: googleCseId,
+    q: query,
+    num: '10',
+    dateRestrict: 'w1', // Last week
+    safe: 'active',
+  });
 
-    const sentences = cleanText.split(/(?<=[.!?])\s+/);
-    for (const sentence of sentences) {
-      const trimmed = sentence.trim();
-      if (trimmed.length < 60) continue;
-      if (skipPatterns.some(p => p.test(trimmed))) continue;
-      const letterRatio = (trimmed.match(/[a-zA-Z]/g) || []).length / trimmed.length;
-      if (letterRatio < 0.5) continue;
-      return trimmed.slice(0, 350);
+  console.log(`[${bias}] Google CSE search: ${topicClean.slice(0, 50)}...`);
+
+  try {
+    const response = await fetch(`https://www.googleapis.com/customsearch/v1?${params}`);
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[${bias}] Google CSE error: ${response.status} - ${errorText.slice(0, 200)}`);
+      return [];
     }
 
-    if (cleanText.length > 80) {
-      const afterByline = cleanText.replace(/^.*?(By\s+\w+[^.]+\.)/i, '').trim();
-      if (afterByline.length > 80) return afterByline.slice(0, 350);
+    const data = await response.json();
+    const items = data.items || [];
+    
+    console.log(`[${bias}] Google CSE returned ${items.length} results`);
+
+    const articles: NewsArticle[] = [];
+    for (const item of items) {
+      const url = item.link;
+      if (!url || !isArticlePath(url)) continue;
+      
+      const detectedBias = getBiasForUrl(url);
+      if (detectedBias !== bias) continue;
+
+      const outlet = detectOutletFromUrl(url);
+      const title = item.title || `Article from ${outlet}`;
+      const snippet = item.snippet || title;
+
+      articles.push({ url, title, outlet, snippet, bias });
     }
-  }
 
-  if (description) {
-    const d = String(description).replace(/[#*_`]/g, '').trim();
-    if (d.length > 40) return d.slice(0, 350);
+    return articles;
+  } catch (error) {
+    console.error(`[${bias}] Google CSE fetch error:`, error);
+    return [];
   }
-
-  return title;
 }
 
-// BROAD search: no domain restrictions, then filter by bias afterward
-async function searchBroadFirecrawl(
+// Search all biases in parallel with Google CSE
+async function searchAllGoogleCSE(
   topic: string,
+  googleApiKey: string,
+  googleCseId: string
+): Promise<NewsArticle[]> {
+  console.log('Using Google Custom Search API (primary)');
+  
+  const [left, center, right] = await Promise.all([
+    searchGoogleCSE(topic, 'left', googleApiKey, googleCseId),
+    searchGoogleCSE(topic, 'center', googleApiKey, googleCseId),
+    searchGoogleCSE(topic, 'right', googleApiKey, googleCseId),
+  ]);
+
+  const articles = [...left, ...center, ...right];
+  
+  console.log(`Google CSE total: left=${left.length}, center=${center.length}, right=${right.length}`);
+  
+  return articles;
+}
+
+// ============ FIRECRAWL FALLBACK ============
+
+async function searchFirecrawlForBias(
+  topic: string,
+  bias: 'left' | 'center' | 'right',
   firecrawlKey: string
 ): Promise<NewsArticle[]> {
   const topicClean = String(topic).replace(/["""]/g, '').trim();
-  const topicShort = topicClean.split(/\s+/).slice(0, 5).join(' ');
+  const domains = domainsByBias[bias];
+  const siteFilters = domains.map(d => `site:${d}`).join(' OR ');
+  const query = `${topicClean} (${siteFilters})`;
 
-  const fetchFirecrawl = async (query: string, tbs?: string) => {
-    const body: Record<string, unknown> = {
-      query,
-      // Keep this modest to avoid timeouts; we can do targeted fills for missing biases.
-      limit: 18,
-      lang: 'en',
-      scrapeOptions: { formats: ['markdown'] },
-    };
-    if (tbs) body.tbs = tbs;
+  console.log(`[${bias}] Firecrawl fallback search`);
 
+  try {
     const response = await fetch('https://api.firecrawl.dev/v1/search', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${firecrawlKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        query,
+        limit: 8,
+        lang: 'en',
+        tbs: 'qdr:w',
+        scrapeOptions: { formats: ['markdown'] },
+      }),
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(`Firecrawl error: ${errorText.slice(0, 200)}`);
+      console.error(`[${bias}] Firecrawl error: ${errorText.slice(0, 200)}`);
       return [];
     }
 
     const data = await response.json();
-    return data.data || [];
-  };
-
-  const toArticles = (results: any[]): NewsArticle[] => {
+    const results = data.data || [];
+    
     const articles: NewsArticle[] = [];
-    for (const result of results || []) {
+    for (const result of results) {
       const url = result?.url;
-      if (!url || typeof url !== 'string') continue;
-      if (!isArticlePath(url)) continue;
-
-      const bias = getBiasForUrl(url);
-      if (!bias) continue; // Not in our known outlet list
+      if (!url || !isArticlePath(url)) continue;
+      if (getBiasForUrl(url) !== bias) continue;
 
       const outlet = detectOutletFromUrl(url);
       let title = result.title || `Article from ${outlet}`;
       title = title.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/[#*_`]/g, '').trim();
-      const snippet = cleanSnippet(result.markdown, result.description, title);
+      
+      let snippet = result.description || result.markdown?.slice(0, 300) || title;
+      snippet = snippet.replace(/[#*_`]/g, '').trim();
 
       articles.push({ url, title, outlet, snippet, bias });
     }
+
+    console.log(`[${bias}] Firecrawl found ${articles.length} articles`);
     return articles;
-  };
+  } catch (error) {
+    console.error(`[${bias}] Firecrawl fetch error:`, error);
+    return [];
+  }
+}
 
-  console.log('Firecrawl broad search (week):', topicClean.slice(0, 80));
-  let results = await fetchFirecrawl(topicClean, 'qdr:w');
-  let articles = toArticles(results);
+// ============ PERPLEXITY LAST RESORT ============
 
-  // Month is expensive and has been a common timeout vector; prefer targeted fills instead.
+async function searchPerplexityForBias(
+  topic: string,
+  bias: 'left' | 'center' | 'right',
+  perplexityKey: string
+): Promise<NewsArticle[]> {
+  const topicClean = String(topic).replace(/["""]/g, '').trim();
+  const domains = domainsByBias[bias];
+  const siteFilters = domains.map(d => `site:${d}`).join(' OR ');
+  const query = `${topicClean} (${siteFilters})`;
+
+  console.log(`[${bias}] Perplexity last-resort search`);
+
+  try {
+    const response = await fetch('https://api.perplexity.ai/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${perplexityKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'sonar',
+        messages: [
+          {
+            role: 'user',
+            content: `Find recent news articles about: ${query}. Return article links only.`
+          }
+        ],
+        search_recency_filter: 'week',
+        temperature: 0.1,
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      console.error(`[${bias}] Perplexity error: ${err.slice(0, 200)}`);
+      return [];
+    }
+
+    const data = await response.json();
+    const citations = (data.citations || []) as string[];
+    const content = data.choices?.[0]?.message?.content || '';
+
+    const articles: NewsArticle[] = [];
+    for (const url of citations) {
+      if (!url || !url.startsWith('http')) continue;
+      if (!isArticlePath(url)) continue;
+      if (getBiasForUrl(url) !== bias) continue;
+      
+      const outlet = detectOutletFromUrl(url);
+      articles.push({
+        url,
+        title: `Article from ${outlet}`,
+        outlet,
+        snippet: content.slice(0, 220) + '...',
+        bias,
+      });
+    }
+
+    console.log(`[${bias}] Perplexity found ${articles.length} articles`);
+    return articles;
+  } catch (error) {
+    console.error(`[${bias}] Perplexity fetch error:`, error);
+    return [];
+  }
+}
+
+// ============ MAIN SEARCH ORCHESTRATOR ============
+
+async function searchNews(
+  topic: string,
+  googleApiKey: string | undefined,
+  googleCseId: string | undefined,
+  firecrawlKey: string | undefined,
+  perplexityKey: string | undefined
+): Promise<NewsArticle[]> {
+  console.log(`Searching perspectives for: ${topic}`);
+
+  let articles: NewsArticle[] = [];
+
+  // PRIMARY: Google Custom Search API (most reliable)
+  if (googleApiKey && googleCseId) {
+    articles = await searchAllGoogleCSE(topic, googleApiKey, googleCseId);
+  }
+
+  // Helper to check if we have articles for a bias
   const hasBias = (b: 'left' | 'center' | 'right') => articles.some(a => a.bias === b);
+  const missingBiases = (['left', 'center', 'right'] as const).filter(b => !hasBias(b));
 
-  // Try shorter topic if still missing biases
-  if ((!hasBias('left') || !hasBias('center') || !hasBias('right')) && topicShort !== topicClean) {
-    console.log('Firecrawl broad search (short):', topicShort);
-    results = await fetchFirecrawl(topicShort, 'qdr:w');
-    articles = [...articles, ...toArticles(results)];
+  // FALLBACK: Firecrawl for missing biases
+  if (missingBiases.length > 0 && firecrawlKey) {
+    console.log(`Filling missing biases with Firecrawl: ${missingBiases.join(', ')}`);
+    const firecrawlResults = await Promise.all(
+      missingBiases.map(b => searchFirecrawlForBias(topic, b, firecrawlKey))
+    );
+    articles = [...articles, ...firecrawlResults.flat()];
+  }
+
+  // Recheck missing biases
+  const stillMissing = (['left', 'center', 'right'] as const).filter(b => !hasBias(b));
+
+  // LAST RESORT: Perplexity for still-missing biases
+  if (stillMissing.length > 0 && perplexityKey) {
+    console.log(`Filling still-missing biases with Perplexity: ${stillMissing.join(', ')}`);
+    const perplexityResults = await Promise.all(
+      stillMissing.map(b => searchPerplexityForBias(topic, b, perplexityKey))
+    );
+    articles = [...articles, ...perplexityResults.flat()];
   }
 
   // Dedupe by URL
@@ -246,272 +384,7 @@ async function searchBroadFirecrawl(
     return true;
   });
 
-  console.log(`Firecrawl found: left=${deduped.filter(a => a.bias === 'left').length}, center=${deduped.filter(a => a.bias === 'center').length}, right=${deduped.filter(a => a.bias === 'right').length}`);
-  return deduped;
-}
-
-// Fallback: broad Perplexity search (no domain filter), then bucket by bias
-async function searchBroadPerplexity(
-  topic: string,
-  perplexityKey: string
-): Promise<NewsArticle[]> {
-  const topicClean = String(topic).replace(/["""]/g, '').trim();
-
-  const tryQuery = async (query: string, recency: 'week' | 'month') => {
-    const response = await fetch('https://api.perplexity.ai/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${perplexityKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'sonar',
-        messages: [
-          {
-            role: 'user',
-            content: `Find recent news articles about: ${query}. Return links from major news outlets.`
-          }
-        ],
-        search_recency_filter: recency,
-        temperature: 0.1,
-      }),
-    });
-
-    if (!response.ok) {
-      const err = await response.text();
-      console.error(`Perplexity error: ${err.slice(0, 200)}`);
-      return { citations: [] as string[], content: '' };
-    }
-
-    const data = await response.json();
-    return {
-      citations: (data.citations || []) as string[],
-      content: data.choices?.[0]?.message?.content || '',
-    };
-  };
-
-  console.log('Perplexity broad search (week):', topicClean.slice(0, 80));
-  let { citations, content } = await tryQuery(topicClean, 'week');
-
-  if (citations.length < 5) {
-    console.log('Perplexity broad search (month):', topicClean.slice(0, 80));
-    const more = await tryQuery(topicClean, 'month');
-    citations = [...citations, ...more.citations];
-    content = content || more.content;
-  }
-
-  console.log(`Perplexity citations: ${citations.length}`);
-
-  const articles: NewsArticle[] = [];
-  for (const url of citations) {
-    if (!url || !url.startsWith('http')) continue;
-    if (!isArticlePath(url)) continue;
-    const bias = getBiasForUrl(url);
-    if (!bias) continue;
-    const outlet = detectOutletFromUrl(url);
-    articles.push({
-      url,
-      title: `Article from ${outlet}`,
-      outlet,
-      snippet: (content || '').slice(0, 220) + '...',
-      bias,
-    });
-  }
-
-  // Dedupe
-  const seen = new Set<string>();
-  return articles.filter(a => {
-    if (seen.has(a.url)) return false;
-    seen.add(a.url);
-    return true;
-  });
-}
-
-async function searchTargetedFirecrawl(
-  topic: string,
-  bias: 'left' | 'center' | 'right',
-  firecrawlKey: string
-): Promise<NewsArticle[]> {
-  const topicClean = String(topic).replace(/["“”]/g, '').trim();
-  const topicShort = topicClean.split(/\s+/).slice(0, 6).join(' ');
-  const domains = domainsByBias[bias];
-  const siteFilters = domains.map(d => `site:${d}`).join(' OR ');
-
-  const fetchFirecrawl = async (query: string) => {
-    const body: Record<string, unknown> = {
-      query,
-      limit: 6,
-      lang: 'en',
-      scrapeOptions: { formats: ['markdown'] },
-    };
-    body.tbs = 'qdr:w';
-
-    const response = await fetch('https://api.firecrawl.dev/v1/search', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${firecrawlKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`[${bias}] Firecrawl targeted error: ${errorText.slice(0, 200)}`);
-      return [];
-    }
-
-    const data = await response.json();
-    return data.data || [];
-  };
-
-  const toArticles = (results: any[]): NewsArticle[] => {
-    const articles: NewsArticle[] = [];
-    for (const result of results || []) {
-      const url = result?.url;
-      if (!url || typeof url !== 'string') continue;
-      if (!isArticlePath(url)) continue;
-      if (getBiasForUrl(url) !== bias) continue;
-
-      const outlet = detectOutletFromUrl(url);
-      let title = result.title || `Article from ${outlet}`;
-      title = title.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/[#*_`]/g, '').trim();
-      const snippet = cleanSnippet(result.markdown, result.description, title);
-
-      articles.push({ url, title, outlet, snippet, bias });
-    }
-    return articles;
-  };
-
-  const qFull = `${topicClean} ${siteFilters}`;
-  const qShort = topicShort && topicShort !== topicClean ? `${topicShort} ${siteFilters}` : '';
-
-  console.log(`[${bias}] Targeted Firecrawl fill (week-only)`);
-  let articles = toArticles(await fetchFirecrawl(qFull));
-  if (articles.length === 0 && qShort) articles = toArticles(await fetchFirecrawl(qShort));
-
-  return articles;
-}
-
-async function searchTargetedPerplexity(
-  topic: string,
-  bias: 'left' | 'center' | 'right',
-  perplexityKey: string
-): Promise<NewsArticle[]> {
-  const topicClean = String(topic).replace(/["“”]/g, '').trim();
-  const topicShort = topicClean.split(/\s+/).slice(0, 6).join(' ');
-  const domains = domainsByBias[bias];
-  const siteFilters = domains.map(d => `site:${d}`).join(' OR ');
-
-  const tryQuery = async (query: string, recency: 'week' | 'month') => {
-    const response = await fetch('https://api.perplexity.ai/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${perplexityKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'sonar',
-        messages: [
-          {
-            role: 'user',
-            content: `Return ONLY real article links (citations) for: ${query}. Do not include homepages.`
-          }
-        ],
-        search_recency_filter: recency,
-        temperature: 0.1,
-      }),
-    });
-
-    if (!response.ok) {
-      const err = await response.text();
-      console.error(`[${bias}] Perplexity targeted error: ${err.slice(0, 200)}`);
-      return { citations: [] as string[], content: '' };
-    }
-
-    const data = await response.json();
-    return {
-      citations: (data.citations || []) as string[],
-      content: data.choices?.[0]?.message?.content || '',
-    };
-  };
-
-  const qFull = `${topicClean} (${siteFilters})`;
-  const qShort = topicShort && topicShort !== topicClean ? `${topicShort} (${siteFilters})` : '';
-
-  console.log(`[${bias}] Targeted Perplexity fill (week-only)`);
-  let { citations, content } = await tryQuery(qFull, 'week');
-  if (citations.length === 0 && qShort) ({ citations, content } = await tryQuery(qShort, 'week'));
-
-  const articles: NewsArticle[] = [];
-  for (const url of citations) {
-    if (!url || !url.startsWith('http')) continue;
-    if (!isArticlePath(url)) continue;
-    if (getBiasForUrl(url) !== bias) continue;
-    const outlet = detectOutletFromUrl(url);
-    articles.push({
-      url,
-      title: `Article from ${outlet}`,
-      outlet,
-      snippet: (content || '').slice(0, 220) + '...',
-      bias,
-    });
-  }
-
-  // Dedupe
-  const seen = new Set<string>();
-  return articles.filter(a => {
-    if (seen.has(a.url)) return false;
-    seen.add(a.url);
-    return true;
-  });
-}
-
-async function searchNews(topic: string, firecrawlKey: string | undefined, perplexityKey: string | undefined): Promise<NewsArticle[]> {
-  console.log(`Searching all perspectives for: ${topic}`);
-
-  let articles: NewsArticle[] = [];
-
-  // Primary: Firecrawl broad search
-  if (firecrawlKey) {
-    articles = await searchBroadFirecrawl(topic, firecrawlKey);
-  }
-
-  // Fill missing biases with targeted Firecrawl (site: constrained), then targeted Perplexity.
-  const hasBias = (b: 'left' | 'center' | 'right') => articles.some(a => a.bias === b);
-  for (const b of ['left', 'center', 'right'] as const) {
-    if (hasBias(b)) continue;
-    if (firecrawlKey) {
-      console.log(`Filling missing bias via targeted Firecrawl: ${b}`);
-      const more = await searchTargetedFirecrawl(topic, b, firecrawlKey);
-      articles = [...articles, ...more];
-    }
-    if (!hasBias(b) && perplexityKey) {
-      console.log(`Filling missing bias via targeted Perplexity: ${b}`);
-      const more = await searchTargetedPerplexity(topic, b, perplexityKey);
-      articles = [...articles, ...more];
-    }
-
-    // Early exit once all three exist
-    if (hasBias('left') && hasBias('center') && hasBias('right')) break;
-  }
-
-  // Fallback: Perplexity broad search for missing biases
-  if (perplexityKey && (!hasBias('left') || !hasBias('center') || !hasBias('right'))) {
-    console.log('Perplexity fallback for missing biases');
-    const more = await searchBroadPerplexity(topic, perplexityKey);
-    articles = [...articles, ...more];
-  }
-
-  // Final dedupe
-  const seen = new Set<string>();
-  const deduped = articles.filter(a => {
-    if (seen.has(a.url)) return false;
-    seen.add(a.url);
-    return true;
-  });
-
-  console.log(`Total: left=${deduped.filter(a => a.bias === 'left').length}, center=${deduped.filter(a => a.bias === 'center').length}, right=${deduped.filter(a => a.bias === 'right').length}`);
+  console.log(`Final: left=${deduped.filter(a => a.bias === 'left').length}, center=${deduped.filter(a => a.bias === 'center').length}, right=${deduped.filter(a => a.bias === 'right').length}`);
   return deduped;
 }
 
@@ -577,6 +450,8 @@ Deno.serve(async (req) => {
     }
 
     const aiKey = Deno.env.get('LOVABLE_API_KEY');
+    const googleApiKey = Deno.env.get('GOOGLE_SEARCH_API_KEY');
+    const googleCseId = Deno.env.get('GOOGLE_SEARCH_ENGINE_ID');
     const firecrawlKey = Deno.env.get('FIRECRAWL_API_KEY');
     const perplexityKey = Deno.env.get('PERPLEXITY_API_KEY');
 
@@ -588,10 +463,11 @@ Deno.serve(async (req) => {
     }
 
     console.log('Searching perspectives for topic:', topic);
+    console.log('Google CSE available:', !!(googleApiKey && googleCseId));
     console.log('Firecrawl available:', !!firecrawlKey);
     console.log('Perplexity available:', !!perplexityKey);
 
-    const realArticles = await searchNews(topic, firecrawlKey, perplexityKey);
+    const realArticles = await searchNews(topic, googleApiKey, googleCseId, firecrawlKey, perplexityKey);
 
     if (realArticles.length === 0) {
       return new Response(
