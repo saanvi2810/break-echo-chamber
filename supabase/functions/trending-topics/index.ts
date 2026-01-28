@@ -36,10 +36,11 @@ Deno.serve(async (req) => {
         messages: [
           {
             role: 'user',
-            content: `What are the 5 most talked about news topics TODAY? Return ONLY a JSON array of 5 short topic names (2-4 words each), no explanation. Example: ["Topic One", "Topic Two", "Topic Three", "Topic Four", "Topic Five"]`
+            content: `What are 5 specific, politically divisive or controversial news stories being debated TODAY? Focus on topics where left-wing and right-wing media have opposing takes. Be specific (e.g., "Trump's Tariff Policy" not just "Economy"). Return ONLY a JSON array of 5 specific topic names (3-6 words each), no explanation. Example: ["Biden's Border Executive Order", "Tesla Union Vote Results", "TikTok Ban Supreme Court"]`
           }
         ],
-        temperature: 0.3,
+        temperature: 0.5,
+        search_recency_filter: 'day',
       }),
     });
 
