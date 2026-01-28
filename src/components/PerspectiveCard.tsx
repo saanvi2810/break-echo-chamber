@@ -134,15 +134,21 @@ const PerspectiveCard = ({
           </div>
         )}
 
-        <a
-          href={articleUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline mt-auto"
-        >
-          <span>Read full article</span>
-          <ExternalLink className="w-3.5 h-3.5" />
-        </a>
+        {articleUrl && articleUrl.startsWith("http") ? (
+          <a
+            href={articleUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline mt-auto"
+          >
+            <span>Read full article</span>
+            <ExternalLink className="w-3.5 h-3.5" />
+          </a>
+        ) : (
+          <p className="text-xs text-muted-foreground mt-auto">
+            No valid article link found for this source.
+          </p>
+        )}
       </div>
     </article>
   );
