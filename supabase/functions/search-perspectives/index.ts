@@ -62,27 +62,37 @@ function detectBias(outlet: string, url: string): 'left' | 'center' | 'right' {
   return 'center';
 }
 
-// Domain lists based on AllSides Media Bias Chart (max 20 per Perplexity API limit)
+// Domain lists based on AllSides Media Bias Chart + common news sources
 // LEFT = Left + Lean Left sources
 // CENTER = Center sources  
 // RIGHT = Lean Right + Right sources
 const domainsByBias: Record<'left' | 'center' | 'right', string[]> = {
-  // Left + Lean Left (AllSides chart)
+  // Left + Lean Left (AllSides chart + additional common sources)
   left: [
-    'alternet.org', 'apnews.com', 'theatlantic.com', 'thedailybeast.com', 'democracynow.org',
-    'theguardian.com', 'huffpost.com', 'theintercept.com', 'jacobin.com', 'motherjones.com',
-    'msnbc.com', 'thenation.com', 'newyorker.com', 'slate.com', 'vox.com',
+    // Hard Left
+    'alternet.org', 'democracynow.org', 'jacobin.com', 'motherjones.com', 'thenation.com', 'theintercept.com',
+    // Left
+    'thedailybeast.com', 'huffpost.com', 'msnbc.com', 'newyorker.com', 'slate.com', 'vox.com', 'theguardian.com',
     // Lean Left
-    'abcnews.go.com', 'axios.com', 'bloomberg.com', 'cbsnews.com', 'cnbc.com',
-    'cnn.com', 'insider.com', 'businessinsider.com', 'thehill.com', 'nbcnews.com',
+    'abcnews.go.com', 'apnews.com', 'axios.com', 'theatlantic.com', 'bloomberg.com', 'cbsnews.com', 'cnbc.com',
+    'cnn.com', 'insider.com', 'businessinsider.com', 'thehill.com', 'nbcnews.com', 'nbc.com',
     'nytimes.com', 'npr.org', 'politico.com', 'propublica.org', 'semafor.com',
-    'time.com', 'usatoday.com', 'washingtonpost.com', 'news.yahoo.com'
+    'time.com', 'usatoday.com', 'washingtonpost.com', 'news.yahoo.com',
+    // International left-leaning
+    'france24.com', 'rfi.fr', 'dw.com', 'aljazeera.com',
   ],
-  // Center (AllSides chart)
+  // Center (AllSides chart + wire services + research)
   center: [
     '1440.io', 'bbc.com', 'csmonitor.com', 'forbes.com', 'marketwatch.com',
     'morningbrew.com', 'newsnationnow.com', 'newsweek.com', 'reason.com',
-    'reuters.com', 'tangle.media', 'wsj.com'
+    'reuters.com', 'tangle.media', 'wsj.com',
+    // Wire services & research
+    'apnews.com', 'afp.com', 'upi.com',
+    // Defense/Policy (typically center/nonpartisan)
+    'defensenews.com', 'defensescoop.com', 'aviationweek.com', 'csis.org', 'brookings.edu',
+    'cfr.org', 'foreignaffairs.com', 'politifact.com', 'factcheck.org', 'snopes.com',
+    // Government sources (center by nature)
+    'state.gov', 'defense.gov', 'whitehouse.gov',
   ],
   // Lean Right + Right (AllSides chart)
   right: [
@@ -93,23 +103,33 @@ const domainsByBias: Record<'left' | 'center' | 'right', string[]> = {
     // Right
     'theamericanconservative.com', 'spectator.org', 'theblaze.com', 'breitbart.com',
     'cbn.com', 'dailycaller.com', 'dailywire.com', 'foxnews.com', 'thefederalist.com',
-    'ijr.com', 'newsmax.com', 'oann.com', 'thepostmillennial.com', 'freebeacon.com'
+    'ijr.com', 'newsmax.com', 'oann.com', 'thepostmillennial.com', 'freebeacon.com',
+    // Additional right-leaning
+    'townhall.com', 'redstate.com', 'twitchy.com', 'pjmedia.com', 'hotair.com',
   ],
 };
 
 // Classify a URL's bias based on our domain lists
 function classifyUrlBias(url: string): 'left' | 'center' | 'right' | null {
   try {
-    const hostname = new URL(url).hostname.toLowerCase().replace('www.', '');
+    const hostname = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
+    
+    // Helper to check if hostname matches domain
+    const matchesDomain = (domain: string) => {
+      const cleanDomain = domain.toLowerCase().replace(/^www\./, '');
+      return hostname === cleanDomain || 
+             hostname.endsWith('.' + cleanDomain) ||
+             hostname.includes(cleanDomain);
+    };
     
     for (const domain of domainsByBias.left) {
-      if (hostname === domain || hostname.endsWith('.' + domain)) return 'left';
+      if (matchesDomain(domain)) return 'left';
     }
     for (const domain of domainsByBias.center) {
-      if (hostname === domain || hostname.endsWith('.' + domain)) return 'center';
+      if (matchesDomain(domain)) return 'center';
     }
     for (const domain of domainsByBias.right) {
-      if (hostname === domain || hostname.endsWith('.' + domain)) return 'right';
+      if (matchesDomain(domain)) return 'right';
     }
     return null;
   } catch {
