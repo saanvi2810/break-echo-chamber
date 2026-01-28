@@ -129,43 +129,63 @@ async function searchNewsByBias(
   perplexityKey: string,
   bias: 'left' | 'center' | 'right'
 ): Promise<NewsArticle[]> {
-  // Force results to come ONLY from the allowed domains.
-  // Note: Avoid combining `search_domain_filter` with explicit `site:` queries; that can over-restrict.
-  const query = `Find recent news articles about "${topic}". Return multiple results with citations.`;
+  // Two-pass strategy:
+  // 1) Prefer strict domain-filtered search.
+  // 2) If Perplexity returns 0 citations (common for niche/AI-generated topics), retry with a broader query,
+  //    then apply our own allowlist filtering.
+
+  const siteFilters: Record<string, string> = {
+    left: 'site:theguardian.com OR site:msnbc.com OR site:huffpost.com OR site:vox.com OR site:slate.com OR site:thedailybeast.com OR site:motherjones.com OR site:theatlantic.com OR site:nytimes.com OR site:washingtonpost.com OR site:cnn.com',
+    center: 'site:reuters.com OR site:apnews.com OR site:bbc.com OR site:npr.org OR site:axios.com OR site:thehill.com OR site:pbs.org OR site:usatoday.com',
+    right: 'site:foxnews.com OR site:wsj.com OR site:dailywire.com OR site:nypost.com OR site:washingtonexaminer.com OR site:nationalreview.com OR site:breitbart.com OR site:newsmax.com',
+  };
+
+  const strictQuery = `Find recent news articles about "${topic}". Return multiple results with citations.`;
+  const fallbackQuery = `${topic} news (${siteFilters[bias]})`;
+
   console.log(`Searching ${bias} sources for:`, topic, 'domains:', validDomains[bias].join(', '));
 
-  const response = await fetch('https://api.perplexity.ai/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${perplexityKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'sonar',
-      messages: [
-        {
-          role: 'system',
-          content: `You are a news research assistant. Only return results from the allowed news domains provided via search_domain_filter. Do not include government websites, advocacy org sites, universities, Wikipedia, or press releases.`
-        },
-        {
-          role: 'user',
-          content: query
-        }
-      ],
-      search_recency_filter: 'week',
-      search_domain_filter: validDomains[bias],
-    }),
-  });
+  const runPerplexity = async (opts: { query: string; useDomainFilter: boolean; recency: 'week' | 'month' }) => {
+    const r = await fetch('https://api.perplexity.ai/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${perplexityKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'sonar',
+        messages: [
+          {
+            role: 'system',
+            content: `You are a news research assistant. Return real news articles with citations. Do not include government websites, advocacy org sites, universities, Wikipedia, or press releases.`
+          },
+          { role: 'user', content: opts.query }
+        ],
+        search_recency_filter: opts.recency,
+        ...(opts.useDomainFilter ? { search_domain_filter: validDomains[bias] } : {}),
+      }),
+    });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error(`Perplexity ${bias} search error:`, errorText);
-    return [];
+    if (!r.ok) {
+      const errorText = await r.text();
+      console.error(`Perplexity ${bias} search error:`, errorText);
+      return null;
+    }
+
+    return await r.json();
+  };
+
+  let data = await runPerplexity({ query: strictQuery, useDomainFilter: true, recency: 'week' });
+  let citations: string[] = (data?.citations as string[]) || [];
+
+  // If strict domain filtering yields no citations, retry with a broader query.
+  if (citations.length === 0) {
+    console.log(`${bias} strict search returned 0 citations; retrying with fallback query`);
+    data = await runPerplexity({ query: fallbackQuery, useDomainFilter: false, recency: 'month' });
+    citations = (data?.citations as string[]) || [];
   }
 
-  const data = await response.json();
-  const citations: string[] = data.citations || [];
-  const content = data.choices?.[0]?.message?.content || '';
+  const content = data?.choices?.[0]?.message?.content || '';
   
   console.log(`${bias} search found ${citations.length} citations (before filtering)`);
 
