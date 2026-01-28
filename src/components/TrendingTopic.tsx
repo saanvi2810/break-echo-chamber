@@ -2,14 +2,13 @@ import { useState, useCallback } from "react";
 import { useToast } from "@/hooks/use-toast";
 import TopicSearch from "./TopicSearch";
 import TrendingTopicDisplay from "./TrendingTopicDisplay";
-import { searchPerspectives, type TopicData, type Perspective, type FactCheck } from "@/lib/api/perspectives";
+import { searchPerspectives, type TopicData, type Perspective } from "@/lib/api/perspectives";
 
 const TrendingTopic = () => {
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
   const [currentTopic, setCurrentTopic] = useState<TopicData | null>(null);
   const [perspectives, setPerspectives] = useState<Perspective[] | null>(null);
-  const [factChecks, setFactChecks] = useState<FactCheck[]>([]);
   const [retryAttempt, setRetryAttempt] = useState(0);
   const [lastSearchTopic, setLastSearchTopic] = useState("");
   const [searchError, setSearchError] = useState<string | undefined>();
@@ -81,7 +80,6 @@ const TrendingTopic = () => {
     } else if (result.data) {
       setCurrentTopic(result.data.topic);
       setPerspectives(result.data.perspectives);
-      setFactChecks(result.data.factChecks || []);
       setSearchError(undefined);
       toast({
         title: "Analysis Complete",
@@ -118,7 +116,7 @@ const TrendingTopic = () => {
         </div>
 
         {/* Topic Display */}
-        <TrendingTopicDisplay topic={displayTopic} perspectives={displayPerspectives} factChecks={factChecks} />
+        <TrendingTopicDisplay topic={displayTopic} perspectives={displayPerspectives} />
       </div>
     </section>
   );

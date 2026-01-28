@@ -19,6 +19,7 @@ export interface Perspective {
   summary: string;
   timeAgo: string;
   articleUrl: string;
+  factChecks?: FactCheck[];
 }
 
 export interface TopicData {
