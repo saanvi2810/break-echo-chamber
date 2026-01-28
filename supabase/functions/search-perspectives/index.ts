@@ -20,6 +20,17 @@ interface NewsArticle {
   bias?: 'left' | 'center' | 'right';
 }
 
+function normalizeTopicInput(raw: unknown): string {
+  const str = typeof raw === 'string' ? raw : '';
+  return str
+    .replace(/[#_]+/g, ' ')
+    // Add spaces: "HHSHealthcare" -> "HHS Healthcare", "medicalTraining" -> "medical Training"
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 // Known outlet bias mapping
 const outletBias: Record<string, 'left' | 'center' | 'right'> = {
   // Left-leaning
@@ -64,8 +75,17 @@ function detectBias(outlet: string, url: string): 'left' | 'center' | 'right' {
 
 // Valid domains for each bias - used for strict filtering
 const validDomains: Record<string, string[]> = {
-  left: ['theguardian.com', 'msnbc.com', 'huffpost.com', 'vox.com', 'slate.com', 'thedailybeast.com', 'motherjones.com', 'theatlantic.com', 'nytimes.com', 'washingtonpost.com', 'cnn.com'],
-  center: ['reuters.com', 'apnews.com', 'bbc.com', 'npr.org', 'axios.com', 'thehill.com', 'pbs.org', 'usatoday.com'],
+  left: [
+    'theguardian.com', 'msnbc.com', 'huffpost.com', 'vox.com', 'slate.com', 'thedailybeast.com',
+    'motherjones.com', 'theatlantic.com', 'nytimes.com', 'washingtonpost.com', 'cnn.com',
+    // major broadcast/newsroom sites frequently cited by Perplexity
+    'nbcnews.com', 'abcnews.go.com', 'cbsnews.com',
+  ],
+  center: [
+    'reuters.com', 'apnews.com', 'bbc.com', 'npr.org', 'axios.com', 'thehill.com', 'pbs.org', 'usatoday.com',
+    // often returned for policy/government coverage
+    'politico.com',
+  ],
   right: ['foxnews.com', 'wsj.com', 'dailywire.com', 'nypost.com', 'washingtonexaminer.com', 'nationalreview.com', 'breitbart.com', 'theblaze.com', 'dailycaller.com', 'newsmax.com'],
 };
 
@@ -135,8 +155,8 @@ async function searchNewsByBias(
   //    then apply our own allowlist filtering.
 
   const siteFilters: Record<string, string> = {
-    left: 'site:theguardian.com OR site:msnbc.com OR site:huffpost.com OR site:vox.com OR site:slate.com OR site:thedailybeast.com OR site:motherjones.com OR site:theatlantic.com OR site:nytimes.com OR site:washingtonpost.com OR site:cnn.com',
-    center: 'site:reuters.com OR site:apnews.com OR site:bbc.com OR site:npr.org OR site:axios.com OR site:thehill.com OR site:pbs.org OR site:usatoday.com',
+    left: 'site:theguardian.com OR site:msnbc.com OR site:huffpost.com OR site:vox.com OR site:slate.com OR site:thedailybeast.com OR site:motherjones.com OR site:theatlantic.com OR site:nytimes.com OR site:washingtonpost.com OR site:cnn.com OR site:nbcnews.com OR site:abcnews.go.com OR site:cbsnews.com',
+    center: 'site:reuters.com OR site:apnews.com OR site:bbc.com OR site:npr.org OR site:axios.com OR site:thehill.com OR site:pbs.org OR site:usatoday.com OR site:politico.com',
     right: 'site:foxnews.com OR site:wsj.com OR site:dailywire.com OR site:nypost.com OR site:washingtonexaminer.com OR site:nationalreview.com OR site:breitbart.com OR site:newsmax.com',
   };
 
@@ -305,8 +325,9 @@ Deno.serve(async (req) => {
 
   try {
     const { topic } = await req.json();
+    const normalizedTopic = normalizeTopicInput(topic);
 
-    if (!topic) {
+    if (!normalizedTopic) {
       return new Response(
         JSON.stringify({ error: 'Topic is required' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -323,13 +344,13 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log('Searching perspectives for topic:', topic);
+    console.log('Searching perspectives for topic:', normalizedTopic);
 
     // Search for real news articles using Perplexity
     let realArticles: NewsArticle[] = [];
     if (perplexityKey) {
       try {
-        realArticles = await searchNews(topic, perplexityKey);
+         realArticles = await searchNews(normalizedTopic, perplexityKey);
         console.log(`Found ${realArticles.length} real articles`);
       } catch (e) {
         console.error('Perplexity search failed:', e);
@@ -411,8 +432,8 @@ Each article object: {"outlet": "...", "headline": "...", "summary": "...", "tim
       body: JSON.stringify({
         model: 'google/gemini-2.5-flash',
         messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: `Analyze the following topic from multiple perspectives: "${topic}". ${realArticles.length > 0 ? 'Use the real articles provided to create accurate summaries with working URLs.' : 'Provide realistic news coverage as it would appear today.'}` }
+           { role: 'system', content: systemPrompt },
+           { role: 'user', content: `Analyze the following topic from multiple perspectives: "${normalizedTopic}". ${realArticles.length > 0 ? 'Use the real articles provided to create accurate summaries with working URLs.' : 'Provide realistic news coverage as it would appear today.'}` }
         ],
         temperature: 0.7,
       }),
@@ -454,21 +475,76 @@ Each article object: {"outlet": "...", "headline": "...", "summary": "...", "tim
       );
     }
 
-    // Enforce real URLs on articles within each perspective
+    // Enforce real URLs on articles within each perspective.
+    // IMPORTANT: Do NOT filter articles out (that can wipe entire perspectives when the model slightly
+    // rewrites/normalizes URLs). Instead, normalize and repair URLs by matching to our real citations.
     if (parsedContent?.perspectives && realArticles.length > 0) {
-      const urlsByBias: Record<string, Set<string>> = {
-        left: new Set(realArticles.filter(a => a.bias === 'left').map(a => a.url)),
-        center: new Set(realArticles.filter(a => a.bias === 'center').map(a => a.url)),
-        right: new Set(realArticles.filter(a => a.bias === 'right').map(a => a.url)),
+      const articlesByBias: Record<'left' | 'center' | 'right', NewsArticle[]> = {
+        left: realArticles.filter((a) => a.bias === 'left'),
+        center: realArticles.filter((a) => a.bias === 'center'),
+        right: realArticles.filter((a) => a.bias === 'right'),
       };
-      
-      parsedContent.perspectives.forEach((p: any) => {
-        const validUrls = urlsByBias[p.perspective] || new Set();
-        if (p.articles && Array.isArray(p.articles)) {
-          p.articles = p.articles.filter((article: any) => 
-            article.articleUrl && validUrls.has(article.articleUrl)
-          );
+
+      const normalizeForCompare = (raw: string) => {
+        const normalized = normalizeCitationUrl(raw);
+        try {
+          const u = new URL(normalized);
+          // strip tracking params so comparisons are more forgiving
+          u.search = '';
+          u.hash = '';
+          return u.toString();
+        } catch {
+          return normalized;
         }
+      };
+
+      const hostnameOf = (raw: string) => {
+        try {
+          return new URL(normalizeCitationUrl(raw)).hostname.toLowerCase().replace(/^www\./, '');
+        } catch {
+          return '';
+        }
+      };
+
+      parsedContent.perspectives.forEach((p: any) => {
+        const bias = p?.perspective as 'left' | 'center' | 'right';
+        const pool = articlesByBias[bias] || [];
+        if (!p?.articles || !Array.isArray(p.articles) || pool.length === 0) return;
+
+        const poolByNormalizedUrl = new Map<string, NewsArticle>();
+        for (const a of pool) {
+          poolByNormalizedUrl.set(normalizeForCompare(a.url), a);
+        }
+
+        p.articles = p.articles.map((article: any) => {
+          const currentUrl = typeof article?.articleUrl === 'string' ? article.articleUrl : '';
+          const normalizedCurrent = currentUrl ? normalizeForCompare(currentUrl) : '';
+          const currentHost = currentUrl ? hostnameOf(currentUrl) : '';
+
+          // 1) Exact-ish match after normalization
+          let match = normalizedCurrent ? poolByNormalizedUrl.get(normalizedCurrent) : undefined;
+
+          // 2) Match by hostname
+          if (!match && currentHost) {
+            match = pool.find((a) => hostnameOf(a.url) === currentHost);
+          }
+
+          // 3) Match by outlet label
+          if (!match && typeof article?.outlet === 'string') {
+            const outletLower = article.outlet.toLowerCase();
+            match = pool.find((a) => a.outlet.toLowerCase() === outletLower);
+          }
+
+          // 4) Fallback: assign first available real article for that bias
+          if (!match) match = pool[0];
+
+          return {
+            ...article,
+            outlet: typeof article?.outlet === 'string' && article.outlet.trim() ? article.outlet : match.outlet,
+            headline: typeof article?.headline === 'string' && article.headline.trim() ? article.headline : match.title,
+            articleUrl: match.url,
+          };
+        });
       });
     }
 
