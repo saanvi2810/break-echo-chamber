@@ -62,15 +62,31 @@ function detectBias(outlet: string, url: string): 'left' | 'center' | 'right' {
   return 'center';
 }
 
+// Valid domains for each bias - used for strict filtering
+const validDomains: Record<string, string[]> = {
+  left: ['theguardian.com', 'msnbc.com', 'huffpost.com', 'vox.com', 'slate.com', 'thedailybeast.com', 'motherjones.com', 'theatlantic.com', 'nytimes.com', 'washingtonpost.com', 'cnn.com'],
+  center: ['reuters.com', 'apnews.com', 'bbc.com', 'npr.org', 'axios.com', 'thehill.com', 'pbs.org', 'usatoday.com'],
+  right: ['foxnews.com', 'wsj.com', 'dailywire.com', 'nypost.com', 'washingtonexaminer.com', 'nationalreview.com', 'breitbart.com', 'theblaze.com', 'dailycaller.com', 'newsmax.com'],
+};
+
+function isValidSourceForBias(url: string, bias: 'left' | 'center' | 'right'): boolean {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase().replace('www.', '');
+    return validDomains[bias].some(domain => hostname.includes(domain) || hostname.endsWith(domain));
+  } catch {
+    return false;
+  }
+}
+
 async function searchNewsByBias(
   topic: string,
   perplexityKey: string,
   bias: 'left' | 'center' | 'right'
 ): Promise<NewsArticle[]> {
   const siteFilters: Record<string, string> = {
-    left: 'site:theguardian.com OR site:msnbc.com OR site:huffpost.com OR site:vox.com OR site:slate.com OR site:thedailybeast.com',
-    center: 'site:reuters.com OR site:apnews.com OR site:bbc.com OR site:npr.org OR site:axios.com OR site:thehill.com',
-    right: 'site:foxnews.com OR site:wsj.com OR site:dailywire.com OR site:nypost.com OR site:washingtonexaminer.com OR site:nationalreview.com',
+    left: 'site:theguardian.com OR site:msnbc.com OR site:huffpost.com OR site:vox.com OR site:slate.com OR site:thedailybeast.com OR site:nytimes.com OR site:washingtonpost.com OR site:cnn.com',
+    center: 'site:reuters.com OR site:apnews.com OR site:bbc.com OR site:npr.org OR site:axios.com OR site:thehill.com OR site:pbs.org',
+    right: 'site:foxnews.com OR site:wsj.com OR site:dailywire.com OR site:nypost.com OR site:washingtonexaminer.com OR site:nationalreview.com OR site:breitbart.com OR site:newsmax.com',
   };
 
   const query = `${topic} news ${siteFilters[bias]}`;
@@ -82,16 +98,17 @@ async function searchNewsByBias(
       'Authorization': `Bearer ${perplexityKey}`,
       'Content-Type': 'application/json',
     },
-      body: JSON.stringify({
-        model: 'sonar',
-        messages: [
-          {
-            role: 'user',
-            content: `Find ALL recent news articles about "${topic}" from these sources: ${siteFilters[bias]}. List every article you can find with their headlines.`
-          }
-        ],
-        search_recency_filter: 'week',
-      }),
+    body: JSON.stringify({
+      model: 'sonar',
+      messages: [
+        {
+          role: 'user',
+          content: `Find ALL recent news articles about "${topic}" ONLY from these specific news outlets: ${siteFilters[bias]}. Do not include any government sites, official sources, or other domains. Only news media.`
+        }
+      ],
+      search_recency_filter: 'week',
+      search_domain_filter: validDomains[bias],
+    }),
   });
 
   if (!response.ok) {
@@ -104,14 +121,17 @@ async function searchNewsByBias(
   const citations: string[] = data.citations || [];
   const content = data.choices?.[0]?.message?.content || '';
   
-  console.log(`${bias} search found ${citations.length} citations`);
+  console.log(`${bias} search found ${citations.length} citations (before filtering)`);
 
-  // Extract articles from citations (these are real URLs from Perplexity's search)
+  // Extract articles from citations and STRICTLY filter to valid sources only
   const articles: NewsArticle[] = citations
-    .filter((url: string) => url && typeof url === 'string' && url.startsWith('http'))
+    .filter((url: string) => {
+      if (!url || typeof url !== 'string' || !url.startsWith('http')) return false;
+      // Strict check: only allow URLs from valid domains for this bias
+      return isValidSourceForBias(url, bias);
+    })
     .map((url: string) => {
       const outlet = detectOutletFromUrl(url);
-      // Try to extract title from content if mentioned
       const urlDomain = new URL(url).hostname.replace('www.', '');
       const titleMatch = content.match(new RegExp(`["']([^"']{10,100})["'][^"']*${urlDomain.split('.')[0]}`, 'i'));
       
@@ -124,6 +144,7 @@ async function searchNewsByBias(
       };
     });
 
+  console.log(`${bias} search: ${articles.length} valid articles after filtering`);
   return articles;
 }
 
@@ -250,77 +271,58 @@ Deno.serve(async (req) => {
     const centerArticles = realArticles.filter(a => a.bias === 'center');
     const rightArticles = realArticles.filter(a => a.bias === 'right');
 
-    // Build article lists for AI context
+    // Build article lists for AI context - include full details
     const formatArticleList = (articles: NewsArticle[], label: string) => 
       articles.length > 0 
-        ? `\n${label} ARTICLES:\n${articles.map((a, i) => `${i + 1}. ${a.outlet}: ${a.title} :: ${a.url}`).join('\n')}`
-        : '';
+        ? `\n${label} ARTICLES:\n${articles.map((a, i) => `${i + 1}. Outlet: "${a.outlet}" | Title: "${a.title}" | URL: ${a.url}`).join('\n')}`
+        : `\n${label} ARTICLES: None found`;
 
-    const articleContext = realArticles.length > 0
-      ? formatArticleList(leftArticles, 'LEFT') + 
-        formatArticleList(centerArticles, 'CENTER') + 
-        formatArticleList(rightArticles, 'RIGHT')
-      : '';
+    const articleContext = 
+      formatArticleList(leftArticles, 'LEFT-LEANING') + 
+      formatArticleList(centerArticles, 'CENTER') + 
+      formatArticleList(rightArticles, 'RIGHT-LEANING');
 
-    const systemPrompt = `You are a news analyst that provides balanced, multi-perspective coverage of current events. 
-For any topic, you must provide 3 perspective groups with ALL available articles for each: progressive/left-leaning, centrist/balanced, and conservative/right-leaning.
+    const systemPrompt = `You are a news formatter. Your job is to organize the provided articles into a structured JSON format.
 
 TODAY'S DATE IS: ${currentDate}
 ${articleContext}
 
-IMPORTANT: You must respond with valid JSON only. No markdown, no code blocks, just raw JSON.
-${realArticles.length > 0 ? 'CRITICAL: Include ALL articles from each perspective group. Use the exact URLs provided.' : ''}
+CRITICAL RULES:
+1. ONLY include articles that are explicitly listed above - DO NOT invent or add any articles
+2. Each article MUST stay in its original category (left articles in left, center in center, right in right)
+3. Write a neutral, factual 1-2 sentence summary for each article based on its headline - DO NOT add political spin or framing
+4. Use the EXACT outlet name and URL from the list above
+5. If a category has no articles, return an empty articles array for that perspective
 
-The JSON must follow this exact structure:
+Respond with valid JSON only. No markdown, no code blocks.
+
 {
   "topic": {
-    "title": "Brief topic title",
-    "description": "One sentence description of the topic",
+    "title": "Brief topic title based on the search",
+    "description": "Neutral one sentence description",
     "date": "${currentDate}",
     "tags": ["Tag1", "Tag2", "Tag3"]
   },
   "perspectives": [
     {
       "perspective": "left",
-      "label": "Progressive View",
-      "articles": [
-        {
-          "outlet": "Name of the outlet",
-          "headline": "The actual headline",
-          "summary": "1-2 sentence summary",
-          "timeAgo": "Recently",
-          "articleUrl": "The real URL"
-        }
-      ]
+      "label": "Left-Leaning Sources",
+      "articles": [/* ONLY articles from LEFT-LEANING list above */]
     },
     {
-      "perspective": "center",
-      "label": "Balanced Analysis",
-      "articles": [
-        {
-          "outlet": "Name of the outlet",
-          "headline": "The actual headline",
-          "summary": "1-2 sentence summary",
-          "timeAgo": "Recently",
-          "articleUrl": "The real URL"
-        }
-      ]
+      "perspective": "center", 
+      "label": "Center Sources",
+      "articles": [/* ONLY articles from CENTER list above */]
     },
     {
       "perspective": "right",
-      "label": "Conservative View",
-      "articles": [
-        {
-          "outlet": "Name of the outlet",
-          "headline": "The actual headline",
-          "summary": "1-2 sentence summary",
-          "timeAgo": "Recently",
-          "articleUrl": "The real URL"
-        }
-      ]
+      "label": "Right-Leaning Sources", 
+      "articles": [/* ONLY articles from RIGHT-LEANING list above */]
     }
   ]
-}`;
+}
+
+Each article object: {"outlet": "...", "headline": "...", "summary": "...", "timeAgo": "Recently", "articleUrl": "..."}`;
 
     const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
       method: 'POST',
