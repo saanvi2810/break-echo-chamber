@@ -62,19 +62,33 @@ function detectBias(outlet: string, url: string): 'left' | 'center' | 'right' {
   return 'center';
 }
 
+// Domain lists for each bias category (max 20 per Perplexity API limit)
+const domainsByBias: Record<'left' | 'center' | 'right', string[]> = {
+  left: [
+    'theguardian.com', 'msnbc.com', 'huffpost.com', 'vox.com', 'slate.com',
+    'thedailybeast.com', 'motherjones.com', 'theintercept.com', 'thenation.com',
+    'democracynow.org', 'theatlantic.com', 'newyorker.com', 'jacobin.com', 'alternet.org'
+  ],
+  center: [
+    'reuters.com', 'apnews.com', 'bbc.com', 'npr.org', 'axios.com',
+    'thehill.com', 'newsweek.com', 'csmonitor.com', 'forbes.com', 'tangle.media',
+    'reason.com', 'morningbrew.com'
+  ],
+  right: [
+    'foxnews.com', 'wsj.com', 'dailywire.com', 'nypost.com', 'washingtonexaminer.com',
+    'nationalreview.com', 'breitbart.com', 'dailycaller.com', 'thefederalist.com',
+    'newsmax.com', 'theblaze.com', 'freebeacon.com', 'epochtimes.com'
+  ],
+};
+
 async function searchNewsByBias(
   topic: string,
   perplexityKey: string,
   bias: 'left' | 'center' | 'right'
 ): Promise<NewsArticle[]> {
-  const siteFilters: Record<string, string> = {
-    left: 'site:theguardian.com OR site:msnbc.com OR site:huffpost.com OR site:vox.com OR site:slate.com OR site:thedailybeast.com',
-    center: 'site:reuters.com OR site:apnews.com OR site:bbc.com OR site:npr.org OR site:axios.com OR site:thehill.com',
-    right: 'site:foxnews.com OR site:wsj.com OR site:dailywire.com OR site:nypost.com OR site:washingtonexaminer.com OR site:nationalreview.com',
-  };
-
-  const query = `${topic} news ${siteFilters[bias]}`;
-  console.log(`Searching ${bias} sources:`, query);
+  const domains = domainsByBias[bias];
+  
+  console.log(`Searching ${bias} sources for: ${topic} domains: ${domains.join(', ')}`);
 
   const response = await fetch('https://api.perplexity.ai/chat/completions', {
     method: 'POST',
@@ -87,10 +101,11 @@ async function searchNewsByBias(
       messages: [
         {
           role: 'user',
-          content: `Find the most recent news article about "${topic}" from these sources: ${siteFilters[bias]}. Just tell me what you found.`
+          content: `Find the most recent news articles about "${topic}". Return headlines and URLs from news sources.`
         }
       ],
       search_recency_filter: 'week',
+      search_domain_filter: domains,
     }),
   });
 
@@ -106,12 +121,21 @@ async function searchNewsByBias(
   
   console.log(`${bias} search found ${citations.length} citations`);
 
-  // Extract articles from citations (these are real URLs from Perplexity's search)
+  // Filter citations to only include URLs from our domain list
+  const validDomains = new Set(domains.map(d => d.toLowerCase()));
+  
   const articles: NewsArticle[] = citations
-    .filter((url: string) => url && typeof url === 'string' && url.startsWith('http'))
+    .filter((url: string) => {
+      if (!url || typeof url !== 'string' || !url.startsWith('http')) return false;
+      try {
+        const hostname = new URL(url).hostname.toLowerCase().replace('www.', '');
+        return validDomains.has(hostname) || Array.from(validDomains).some(d => hostname.includes(d.replace('www.', '')));
+      } catch {
+        return false;
+      }
+    })
     .map((url: string) => {
       const outlet = detectOutletFromUrl(url);
-      // Try to extract title from content if mentioned
       const urlDomain = new URL(url).hostname.replace('www.', '');
       const titleMatch = content.match(new RegExp(`["']([^"']{10,100})["'][^"']*${urlDomain.split('.')[0]}`, 'i'));
       
@@ -124,6 +148,7 @@ async function searchNewsByBias(
       };
     });
 
+  console.log(`${bias} search: ${articles.length} valid articles after filtering`);
   return articles;
 }
 
