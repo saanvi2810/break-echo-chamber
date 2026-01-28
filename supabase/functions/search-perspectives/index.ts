@@ -192,31 +192,53 @@ async function searchWithFirecrawl(
           .replace(/\s+/g, ' ') // Normalize whitespace
           .trim();
         
-        // Skip accessibility/navigation text
+        // Patterns to skip (navigation, stock tickers, ads, metadata)
         const skipPatterns = [
           /^(skip to|accessibility|enable accessibility|navigation|menu|search)/i,
           /^(left arrow|right arrow|previous|next)/i,
           /^\d+$/,
+          // Stock/market data patterns
+          /^(markets|dow|s&p|nasdaq|hot stocks)/i,
+          /\d+[.,]\d+[%\-+]/i, // Stock numbers like "49,003.41-408.99"
+          /^(by\s+\w+\s+(staff|reporter|contributor))/i,
+          /^(follow\s+(author|us|me))/i,
+          /^(breaking|trending|popular|featured)/i,
+          /^(advertisement|sponsored|promoted)/i,
         ];
         
-        // Find first substantial sentence (not navigation text)
+        // Find first substantial sentence (actual article content)
         const sentences = cleanText.split(/(?<=[.!?])\s+/);
         for (const sentence of sentences) {
-          if (sentence.length > 50 && !skipPatterns.some(p => p.test(sentence))) {
-            snippet = sentence.slice(0, 300);
-            break;
-          }
+          const trimmed = sentence.trim();
+          // Skip short sentences, navigation, stock data, bylines
+          if (trimmed.length < 60) continue;
+          if (skipPatterns.some(p => p.test(trimmed))) continue;
+          // Skip if mostly numbers/symbols (stock data)
+          const letterRatio = (trimmed.match(/[a-zA-Z]/g) || []).length / trimmed.length;
+          if (letterRatio < 0.5) continue;
+          
+          snippet = trimmed.slice(0, 350);
+          break;
         }
         
-        // Fallback: use cleaned text
-        if (!snippet && cleanText.length > 50) {
-          snippet = cleanText.slice(0, 300);
+        // Fallback: use cleaned text if we couldn't find good content
+        if (!snippet && cleanText.length > 80) {
+          // Try to find any text after common prefixes
+          const afterByline = cleanText.replace(/^.*?(By\s+\w+[^.]+\.)/i, '').trim();
+          if (afterByline.length > 80) {
+            snippet = afterByline.slice(0, 350);
+          }
         }
       }
       
-      // Fallback to description
+      // Fallback to description (often cleaner than full page scrape)
       if (!snippet && result.description) {
         snippet = result.description.replace(/[#*_`]/g, '').trim();
+      }
+      
+      // Final fallback: use title as snippet
+      if (!snippet) {
+        snippet = title;
       }
       
       articles.push({
