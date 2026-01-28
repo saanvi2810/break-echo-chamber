@@ -35,7 +35,7 @@ const TrendingTopicDisplay = ({ topic, perspectives }: TrendingTopicDisplayProps
               <a
                 key={tag}
                 href={`https://twitter.com/search?q=%23${encodeURIComponent(tag.replace(/\s+/g, ''))}`}
-                target="_blank"
+                target="_top"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-accent text-xs font-medium hover:bg-primary hover:text-primary-foreground transition-colors cursor-pointer"
               >
