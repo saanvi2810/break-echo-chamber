@@ -201,6 +201,11 @@ Rules:
 
   const validUrls = uniqueUrls.filter((u) => isAllowedUrl(u) && !isNonArticlePath(u));
 
+  console.log(`${bias} url candidates: total=${uniqueUrls.length}, valid=${validUrls.length}`);
+  if (uniqueUrls.length > 0) {
+    console.log(`${bias} sample urls:`, uniqueUrls.slice(0, 5));
+  }
+
   const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
   const articles: NewsArticle[] = validUrls.slice(0, 8).map((url) => {
