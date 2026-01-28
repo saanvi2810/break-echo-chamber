@@ -6,129 +6,81 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-interface PerplexityResult {
-  url: string;
-  title: string;
-  snippet: string;
-}
-
 interface NewsArticle {
   url: string;
   title: string;
   outlet: string;
   snippet: string;
-  bias?: 'left' | 'center' | 'right';
+  bias: 'left' | 'center' | 'right';
 }
 
-// Known outlet bias mapping
-const outletBias: Record<string, 'left' | 'center' | 'right'> = {
-  // Left-leaning
-  'msnbc': 'left', 'huffpost': 'left', 'huffington post': 'left', 'the guardian': 'left',
-  'vox': 'left', 'slate': 'left', 'daily beast': 'left', 'mother jones': 'left',
-  'the atlantic': 'left', 'new york times': 'left', 'washington post': 'left',
-  'cnn': 'left', 'nbc news': 'left', 'abc news': 'left', 'cbs news': 'left',
-  'npr': 'left', 'politico': 'left', 'buzzfeed': 'left',
-  // Center
-  'reuters': 'center', 'ap news': 'center', 'associated press': 'center',
-  'bbc': 'center', 'pbs': 'center', 'usa today': 'center', 'axios': 'center',
-  'the hill': 'center', 'newsweek': 'center', 'time': 'center',
-  // Right-leaning
-  'fox news': 'right', 'wall street journal': 'right', 'wsj': 'right',
-  'new york post': 'right', 'daily wire': 'right', 'breitbart': 'right',
-  'the blaze': 'right', 'daily caller': 'right', 'washington examiner': 'right',
-  'national review': 'right', 'the federalist': 'right', 'newsmax': 'right',
-  'one america news': 'right', 'oan': 'right', 'epoch times': 'right',
+// Domain lists based on AllSides Media Bias Chart
+const domainsByBias: Record<'left' | 'center' | 'right', string[]> = {
+  left: [
+    'nytimes.com', 'washingtonpost.com', 'cnn.com', 'nbcnews.com', 'npr.org',
+    'abcnews.go.com', 'cbsnews.com', 'msnbc.com', 'theguardian.com', 'politico.com',
+    'huffpost.com', 'vox.com', 'slate.com', 'theatlantic.com', 'thedailybeast.com',
+  ],
+  center: [
+    'reuters.com', 'apnews.com', 'bbc.com', 'forbes.com', 'usatoday.com',
+    'newsweek.com', 'thehill.com', 'axios.com', 'csmonitor.com', 'pbs.org',
+  ],
+  right: [
+    'foxnews.com', 'nypost.com', 'wsj.com', 'washingtonexaminer.com', 'dailywire.com',
+    'nationalreview.com', 'breitbart.com', 'newsmax.com', 'dailycaller.com', 'thefederalist.com',
+    'washingtontimes.com', 'theblaze.com', 'foxbusiness.com', 'freebeacon.com', 'townhall.com',
+  ],
 };
 
 function detectOutletFromUrl(url: string): string {
   try {
     const hostname = new URL(url).hostname.replace('www.', '');
-    const parts = hostname.split('.');
-    return parts.slice(0, -1).join(' ').replace(/-/g, ' ');
+    // Map common hostnames to readable names
+    const nameMap: Record<string, string> = {
+      'nytimes.com': 'New York Times',
+      'washingtonpost.com': 'Washington Post',
+      'cnn.com': 'CNN',
+      'nbcnews.com': 'NBC News',
+      'npr.org': 'NPR',
+      'abcnews.go.com': 'ABC News',
+      'cbsnews.com': 'CBS News',
+      'msnbc.com': 'MSNBC',
+      'theguardian.com': 'The Guardian',
+      'politico.com': 'Politico',
+      'huffpost.com': 'HuffPost',
+      'vox.com': 'Vox',
+      'slate.com': 'Slate',
+      'theatlantic.com': 'The Atlantic',
+      'thedailybeast.com': 'The Daily Beast',
+      'reuters.com': 'Reuters',
+      'apnews.com': 'AP News',
+      'bbc.com': 'BBC',
+      'forbes.com': 'Forbes',
+      'usatoday.com': 'USA Today',
+      'newsweek.com': 'Newsweek',
+      'thehill.com': 'The Hill',
+      'axios.com': 'Axios',
+      'csmonitor.com': 'Christian Science Monitor',
+      'pbs.org': 'PBS',
+      'foxnews.com': 'Fox News',
+      'nypost.com': 'New York Post',
+      'wsj.com': 'Wall Street Journal',
+      'washingtonexaminer.com': 'Washington Examiner',
+      'dailywire.com': 'Daily Wire',
+      'nationalreview.com': 'National Review',
+      'breitbart.com': 'Breitbart',
+      'newsmax.com': 'Newsmax',
+      'dailycaller.com': 'Daily Caller',
+      'thefederalist.com': 'The Federalist',
+      'washingtontimes.com': 'Washington Times',
+      'theblaze.com': 'The Blaze',
+      'foxbusiness.com': 'Fox Business',
+      'freebeacon.com': 'Free Beacon',
+      'townhall.com': 'Townhall',
+    };
+    return nameMap[hostname] || hostname.split('.')[0].charAt(0).toUpperCase() + hostname.split('.')[0].slice(1);
   } catch {
     return 'Unknown Source';
-  }
-}
-
-function detectBias(outlet: string, url: string): 'left' | 'center' | 'right' {
-  const lowerOutlet = outlet.toLowerCase();
-  const lowerUrl = url.toLowerCase();
-  
-  for (const [name, bias] of Object.entries(outletBias)) {
-    if (lowerOutlet.includes(name) || lowerUrl.includes(name.replace(/\s+/g, ''))) {
-      return bias;
-    }
-  }
-  return 'center';
-}
-
-// Domain lists based on AllSides Media Bias Chart + common news sources
-// PRIORITIZED: Major mainstream outlets FIRST (most likely to have articles on current topics)
-// LEFT = Lean Left + Left sources
-// CENTER = Center sources  
-// RIGHT = Lean Right + Right sources
-const domainsByBias: Record<'left' | 'center' | 'right', string[]> = {
-  // Left/Lean Left - MAJOR OUTLETS FIRST
-  left: [
-    // Major mainstream (highest priority - most likely to have current news)
-    'nytimes.com', 'washingtonpost.com', 'cnn.com', 'nbcnews.com', 'npr.org',
-    'abcnews.go.com', 'cbsnews.com', 'msnbc.com', 'theguardian.com', 'politico.com',
-    // Secondary mainstream
-    'thehill.com', 'axios.com', 'vox.com', 'slate.com', 'theatlantic.com',
-    'huffpost.com', 'thedailybeast.com', 'bloomberg.com', 'time.com', 'usatoday.com',
-    // Other left-leaning
-    'motherjones.com', 'theintercept.com', 'jacobin.com', 'thenation.com', 'democracynow.org',
-    'propublica.org', 'newyorker.com', 'insider.com', 'businessinsider.com',
-  ],
-  // Center - WIRE SERVICES & MAJOR CENTER OUTLETS FIRST
-  center: [
-    // Wire services & major center (highest priority)
-    'reuters.com', 'apnews.com', 'bbc.com', 'wsj.com', 'forbes.com',
-    'newsweek.com', 'usatoday.com', 'thehill.com', 'axios.com',
-    // Other center
-    'csmonitor.com', 'marketwatch.com', 'newsnationnow.com', 'reason.com',
-    'foreignaffairs.com', 'cfr.org', 'brookings.edu', 'csis.org',
-    'politifact.com', 'factcheck.org', 'snopes.com',
-  ],
-  // Right/Lean Right - MAJOR OUTLETS FIRST
-  right: [
-    // Major mainstream right (highest priority)
-    'foxnews.com', 'nypost.com', 'wsj.com', 'washingtonexaminer.com', 'dailywire.com',
-    'nationalreview.com', 'foxbusiness.com', 'breitbart.com', 'newsmax.com',
-    // Secondary right
-    'dailycaller.com', 'thefederalist.com', 'washingtontimes.com', 'theblaze.com',
-    'dailymail.co.uk', 'nypost.com', 'realclearpolitics.com', 'freebeacon.com',
-    // Other right-leaning
-    'townhall.com', 'redstate.com', 'hotair.com', 'pjmedia.com', 'oann.com',
-    'theepochtimes.com', 'spectator.org', 'theamericanconservative.com',
-  ],
-};
-
-// Classify a URL's bias based on our domain lists
-function classifyUrlBias(url: string): 'left' | 'center' | 'right' | null {
-  try {
-    const hostname = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
-    
-    // Helper to check if hostname matches domain
-    const matchesDomain = (domain: string) => {
-      const cleanDomain = domain.toLowerCase().replace(/^www\./, '');
-      return hostname === cleanDomain || 
-             hostname.endsWith('.' + cleanDomain) ||
-             hostname.includes(cleanDomain);
-    };
-    
-    for (const domain of domainsByBias.left) {
-      if (matchesDomain(domain)) return 'left';
-    }
-    for (const domain of domainsByBias.center) {
-      if (matchesDomain(domain)) return 'center';
-    }
-    for (const domain of domainsByBias.right) {
-      if (matchesDomain(domain)) return 'right';
-    }
-    return null;
-  } catch {
-    return null;
   }
 }
 
@@ -138,29 +90,129 @@ function isArticlePath(url: string): boolean {
     const u = new URL(url);
     const path = u.pathname.toLowerCase();
     
-    // Reject non-article paths
     if (path === '/' || path === '') return false;
     if (path.startsWith('/people') || path.startsWith('/author') || path.startsWith('/writers')) return false;
     if (path.includes('/tag/') || path.includes('/tags/') || path.includes('/topic/') || path.includes('/topics/')) return false;
     if (path.includes('/category/') || path.includes('/categories/') || path.includes('/section/')) return false;
     
-    // Article paths usually have dates or specific slugs
     return path.length > 10;
   } catch {
     return false;
   }
 }
 
-// Search a specific domain batch for a bias category
-async function searchDomainBatch(
+// Use Firecrawl Search API with site: operators (like Google search)
+async function searchWithFirecrawl(
   topic: string,
   bias: 'left' | 'center' | 'right',
-  domains: string[],
-  perplexityKey: string,
-  batchNum: number
+  firecrawlKey: string
 ): Promise<NewsArticle[]> {
-  console.log(`[${bias} batch ${batchNum}] Searching domains: ${domains.join(', ')}`);
+  const domains = domainsByBias[bias];
+  
+  // Build site: query string (like Google: "topic site:nytimes.com OR site:cnn.com")
+  const siteFilters = domains.slice(0, 8).map(d => `site:${d}`).join(' OR ');
+  const searchQuery = `${topic} (${siteFilters})`;
+  
+  console.log(`[${bias}] Firecrawl search: ${searchQuery.slice(0, 100)}...`);
+  
+  try {
+    const response = await fetch('https://api.firecrawl.dev/v1/search', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${firecrawlKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        query: searchQuery,
+        limit: 10,
+        lang: 'en',
+        country: 'us',
+        tbs: 'qdr:w', // Last week
+        scrapeOptions: {
+          formats: ['markdown'],
+        },
+      }),
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[${bias}] Firecrawl error:`, errorText);
+      return [];
+    }
+    
+    const data = await response.json();
+    const results = data.data || [];
+    
+    console.log(`[${bias}] Firecrawl returned ${results.length} results`);
+    
+    const articles: NewsArticle[] = [];
+    const allowedDomains = new Set(domains.map(d => d.toLowerCase()));
+    
+    for (const result of results) {
+      const url = result.url;
+      if (!url || typeof url !== 'string') continue;
+      
+      // Verify URL is from an allowed domain for this bias
+      try {
+        const hostname = new URL(url).hostname.toLowerCase().replace('www.', '');
+        const isAllowed = [...allowedDomains].some(domain => 
+          hostname === domain || hostname.endsWith('.' + domain)
+        );
+        
+        if (!isAllowed) {
+          console.log(`[${bias}] Skipping off-list domain: ${hostname}`);
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      
+      if (!isArticlePath(url)) {
+        console.log(`[${bias}] Skipping non-article URL: ${url}`);
+        continue;
+      }
+      
+      const outlet = detectOutletFromUrl(url);
+      const title = result.title || `Article from ${outlet}`;
+      
+      // Use scraped markdown content if available, otherwise use description
+      let snippet = '';
+      if (result.markdown) {
+        // Extract first meaningful paragraph from markdown
+        const lines = result.markdown.split('\n').filter((l: string) => l.trim() && !l.startsWith('#'));
+        snippet = lines.slice(0, 2).join(' ').slice(0, 300);
+      } else if (result.description) {
+        snippet = result.description;
+      }
+      
+      articles.push({
+        url,
+        title,
+        outlet,
+        snippet: snippet || 'No preview available',
+        bias,
+      });
+    }
+    
+    console.log(`[${bias}] Valid articles: ${articles.length}`);
+    return articles;
+    
+  } catch (error) {
+    console.error(`[${bias}] Firecrawl search failed:`, error);
+    return [];
+  }
+}
 
+// Fallback to Perplexity if Firecrawl unavailable
+async function searchWithPerplexity(
+  topic: string,
+  bias: 'left' | 'center' | 'right',
+  perplexityKey: string
+): Promise<NewsArticle[]> {
+  const domains = domainsByBias[bias].slice(0, 5);
+  
+  console.log(`[${bias}] Perplexity fallback search`);
+  
   const response = await fetch('https://api.perplexity.ai/chat/completions', {
     method: 'POST',
     headers: {
@@ -172,7 +224,7 @@ async function searchDomainBatch(
       messages: [
         {
           role: 'user',
-          content: `Find recent news articles about "${topic}" from major news outlets. Summarize what each source reports.`
+          content: `Find recent news articles about "${topic}" from major news outlets.`
         }
       ],
       search_recency_filter: 'week',
@@ -181,8 +233,7 @@ async function searchDomainBatch(
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    console.error(`[${bias} batch ${batchNum}] Perplexity error:`, errorText);
+    console.error(`[${bias}] Perplexity error`);
     return [];
   }
 
@@ -190,178 +241,55 @@ async function searchDomainBatch(
   const citations: string[] = data.citations || [];
   const content = data.choices?.[0]?.message?.content || '';
   
-  console.log(`[${bias} batch ${batchNum}] Found ${citations.length} citations`);
-
   const articles: NewsArticle[] = [];
   
   for (const url of citations) {
-    if (!url || typeof url !== 'string' || !url.startsWith('http')) {
-      console.log(`[${bias} batch ${batchNum}] Invalid URL format: ${url}`);
-      continue;
-    }
-    
-    // CRITICAL: Validate this is a real article path, not homepage/author/tag page
-    if (!isArticlePath(url)) {
-      console.log(`[${bias} batch ${batchNum}] Skipping non-article URL: ${url}`);
-      continue;
-    }
+    if (!url || !url.startsWith('http')) continue;
+    if (!isArticlePath(url)) continue;
     
     const outlet = detectOutletFromUrl(url);
-    
-    // Extract summary for this source from content
-    const outletLower = outlet.toLowerCase();
-    const summaryPatterns = [
-      new RegExp(`${outletLower}[^.]*(?:reports?|says?|states?)[^.]+\\.`, 'i'),
-      new RegExp(`according to ${outletLower}[^.]+\\.`, 'i'),
-    ];
-    
-    let snippet = '';
-    for (const pattern of summaryPatterns) {
-      const match = content.match(pattern);
-      if (match) {
-        snippet = match[0].trim();
-        break;
-      }
-    }
-    
-    // If no specific snippet found, use first ~200 chars of content
-    if (!snippet && content) {
-      snippet = content.slice(0, 200).trim() + '...';
-    }
-    
     articles.push({
       url,
       title: `Article from ${outlet}`,
       outlet,
-      snippet,
+      snippet: content.slice(0, 200) + '...',
       bias,
     });
   }
   
-  console.log(`[${bias} batch ${batchNum}] Valid articles: ${articles.length}`);
   return articles;
 }
 
-// Search a specific bias category with MULTIPLE batches (3 batches × 5 domains = 15 domains total)
-async function searchByBias(
-  topic: string, 
-  bias: 'left' | 'center' | 'right',
-  perplexityKey: string
-): Promise<NewsArticle[]> {
-  const domains = domainsByBias[bias];
-  
-  // Perplexity limits to 5 domains per request
-  // Split into 3 batches of 5 domains each (15 domains total per bias)
-  const batch1 = domains.slice(0, 5);
-  const batch2 = domains.slice(5, 10);
-  const batch3 = domains.slice(10, 15);
-  
-  console.log(`Searching ${bias} sources with 3 parallel batches (15 domains total)`);
-  
-  // Run all 3 batches in parallel
-  const [articles1, articles2, articles3] = await Promise.all([
-    searchDomainBatch(topic, bias, batch1, perplexityKey, 1),
-    searchDomainBatch(topic, bias, batch2, perplexityKey, 2),
-    searchDomainBatch(topic, bias, batch3, perplexityKey, 3),
-  ]);
-  
-  const allArticles = [...articles1, ...articles2, ...articles3];
-  
-  // Deduplicate by URL
-  const seenUrls = new Set<string>();
-  const uniqueArticles = allArticles.filter(article => {
-    if (seenUrls.has(article.url)) return false;
-    seenUrls.add(article.url);
-    return true;
-  });
-  
-  console.log(`${bias} total: ${uniqueArticles.length} unique articles from ${allArticles.length} results`);
-  return uniqueArticles;
-}
-
-// Search all three bias categories in parallel
-async function searchNews(topic: string, perplexityKey: string): Promise<NewsArticle[]> {
+// Search all biases in parallel
+async function searchNews(topic: string, firecrawlKey: string | undefined, perplexityKey: string | undefined): Promise<NewsArticle[]> {
   console.log(`Searching all perspectives for: ${topic}`);
   
+  const searchFn = async (bias: 'left' | 'center' | 'right') => {
+    // Prefer Firecrawl (better site: filtering)
+    if (firecrawlKey) {
+      const results = await searchWithFirecrawl(topic, bias, firecrawlKey);
+      if (results.length > 0) return results;
+    }
+    // Fallback to Perplexity
+    if (perplexityKey) {
+      return searchWithPerplexity(topic, bias, perplexityKey);
+    }
+    return [];
+  };
+  
   const [leftArticles, centerArticles, rightArticles] = await Promise.all([
-    searchByBias(topic, 'left', perplexityKey),
-    searchByBias(topic, 'center', perplexityKey),
-    searchByBias(topic, 'right', perplexityKey),
+    searchFn('left'),
+    searchFn('center'),
+    searchFn('right'),
   ]);
   
-  const allArticles = [...leftArticles, ...centerArticles, ...rightArticles];
-  console.log(`Total articles: left=${leftArticles.length}, center=${centerArticles.length}, right=${rightArticles.length}`);
+  console.log(`Total: left=${leftArticles.length}, center=${centerArticles.length}, right=${rightArticles.length}`);
   
-  return allArticles;
+  return [...leftArticles, ...centerArticles, ...rightArticles];
 }
 
 function pickByBias(articles: NewsArticle[], bias: 'left' | 'center' | 'right'): NewsArticle | undefined {
-  const candidates = articles.filter((a) => a.bias === bias);
-  // Never fall back to a different bias; that causes mixing.
-  return candidates[0];
-}
-
-// Known fact-checking domains - URLs from these should be preserved
-const factCheckDomains = [
-  'snopes.com', 'politifact.com', 'factcheck.org', 'fullfact.org',
-  'checkyourfact.com', 'leadstories.com', 'reuters.com/fact-check',
-  'apnews.com/hub/ap-fact-check', 'washingtonpost.com/news/fact-checker',
-  'bbc.com/news/reality_check', 'usatoday.com/news/factcheck',
-];
-
-function isFactCheckUrl(url: string): boolean {
-  if (!url || typeof url !== 'string') return false;
-  const lowerUrl = url.toLowerCase();
-  return factCheckDomains.some(domain => lowerUrl.includes(domain));
-}
-
-function enforceRealArticleUrls(parsedContent: any, realArticles: NewsArticle[]) {
-  // Only enforce article URLs - DO NOT touch claim sourceUrls (those come from Google Fact Check API)
-  if (!parsedContent?.perspectives || !Array.isArray(parsedContent.perspectives) || realArticles.length === 0) return;
-
-  const allowedUrls = new Set(realArticles.map((a) => a.url));
-  const left = pickByBias(realArticles, 'left');
-  const center = pickByBias(realArticles, 'center');
-  const right = pickByBias(realArticles, 'right');
-
-  const fallbackFor = (p: any): NewsArticle | undefined => {
-    if (p?.perspective === 'left') return left;
-    if (p?.perspective === 'center') return center;
-    if (p?.perspective === 'right') return right;
-    return undefined;
-  };
-
-  parsedContent.perspectives.forEach((p: any) => {
-    const chosen = fallbackFor(p);
-    if (!chosen) {
-      const label = p?.perspective === 'left'
-        ? 'No left-leaning articles found'
-        : p?.perspective === 'center'
-          ? 'No center articles found'
-          : 'No right-leaning articles found';
-
-      p.outlet = label;
-      p.headline = label;
-      p.summary = label;
-      p.articleUrl = '';
-      return;
-    }
-
-    // Enforce articleUrl only
-    if (!p.articleUrl || typeof p.articleUrl !== 'string' || !allowedUrls.has(p.articleUrl)) {
-      p.articleUrl = chosen.url;
-    }
-
-    // Enforce outlet/headline when missing (or clearly placeholder)
-    if (!p.outlet || typeof p.outlet !== 'string' || p.outlet.toLowerCase().includes('example')) {
-      p.outlet = chosen.outlet;
-    }
-    if (!p.headline || typeof p.headline !== 'string' || p.headline.toLowerCase().includes('realistic headline')) {
-      p.headline = chosen.title;
-    }
-    
-    // DO NOT modify claim sourceUrls here - let fact-check API populate them
-  });
+  return articles.find(a => a.bias === bias);
 }
 
 Deno.serve(async (req) => {
@@ -379,10 +307,11 @@ Deno.serve(async (req) => {
       );
     }
 
-    const apiKey = Deno.env.get('LOVABLE_API_KEY');
+    const aiKey = Deno.env.get('LOVABLE_API_KEY');
+    const firecrawlKey = Deno.env.get('FIRECRAWL_API_KEY');
     const perplexityKey = Deno.env.get('PERPLEXITY_API_KEY');
     
-    if (!apiKey) {
+    if (!aiKey) {
       return new Response(
         JSON.stringify({ error: 'AI service not configured' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -390,27 +319,17 @@ Deno.serve(async (req) => {
     }
 
     console.log('Searching perspectives for topic:', topic);
+    console.log('Firecrawl available:', !!firecrawlKey);
+    console.log('Perplexity available:', !!perplexityKey);
 
-    // Search for real news articles using Perplexity
-    let realArticles: NewsArticle[] = [];
-    if (perplexityKey) {
-      try {
-        realArticles = await searchNews(topic, perplexityKey);
-        console.log(`Found ${realArticles.length} real articles`);
-      } catch (e) {
-        console.error('Perplexity search failed:', e);
-      }
-    } else {
-      console.log('Perplexity API key not configured, skipping real article search');
-    }
-
-    // Hard stop: never let the AI fabricate outlets/URLs.
-    // If we couldn't find any verified, classified, real article URLs, return a clear error.
+    // Search for real news articles
+    const realArticles = await searchNews(topic, firecrawlKey, perplexityKey);
+    
     if (realArticles.length === 0) {
       return new Response(
         JSON.stringify({
           success: false,
-          error: 'No verified articles found from the approved outlet lists for this topic. Try a broader query or a different topic.',
+          error: 'No verified articles found for this topic. Try a different search term.',
         }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
@@ -422,8 +341,7 @@ Deno.serve(async (req) => {
       day: 'numeric' 
     });
 
-    // BYPASS AI: Use only Perplexity's raw output for article info
-    // Build perspectives directly from realArticles (no AI interpretation/summaries)
+    // Build perspectives from real articles
     const leftArticle = pickByBias(realArticles, 'left');
     const centerArticle = pickByBias(realArticles, 'center');
     const rightArticle = pickByBias(realArticles, 'right');
@@ -434,7 +352,7 @@ Deno.serve(async (req) => {
         label: 'Left-Leaning Source',
         outlet: leftArticle?.outlet || 'No left-leaning sources found',
         headline: leftArticle?.title || 'No article found',
-        summary: leftArticle?.snippet || 'No summary available from this outlet for this topic.',
+        summary: leftArticle?.snippet || 'No summary available.',
         timeAgo: 'Recently',
         articleUrl: leftArticle?.url || '',
         factChecks: [],
@@ -444,7 +362,7 @@ Deno.serve(async (req) => {
         label: 'Center Source',
         outlet: centerArticle?.outlet || 'No center sources found',
         headline: centerArticle?.title || 'No article found',
-        summary: centerArticle?.snippet || 'No summary available from this outlet for this topic.',
+        summary: centerArticle?.snippet || 'No summary available.',
         timeAgo: 'Recently',
         articleUrl: centerArticle?.url || '',
         factChecks: [],
@@ -454,18 +372,18 @@ Deno.serve(async (req) => {
         label: 'Right-Leaning Source',
         outlet: rightArticle?.outlet || 'No right-leaning sources found',
         headline: rightArticle?.title || 'No article found',
-        summary: rightArticle?.snippet || 'No summary available from this outlet for this topic.',
+        summary: rightArticle?.snippet || 'No summary available.',
         timeAgo: 'Recently',
         articleUrl: rightArticle?.url || '',
         factChecks: [],
       },
     ];
 
-    // Use AI just for topic metadata (title/description/tags)
+    // Get topic metadata from AI
     const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'Authorization': `Bearer ${aiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -473,26 +391,12 @@ Deno.serve(async (req) => {
         messages: [
           {
             role: 'system',
-            content: 'Return ONLY valid JSON with no markdown. Provide a short title, one-sentence description, and 3 tags for the given topic. Example: {"title":"...","description":"...","tags":["...","...","..."]}'
+            content: 'Return ONLY valid JSON. Provide a short title, one-sentence description, and 3 tags. Example: {"title":"...","description":"...","tags":["...","...","..."]}'
           },
-          { role: 'user', content: `Generate a short title, one-sentence description, and 3 tags for this topic: "${topic}"` }
+          { role: 'user', content: `Generate metadata for topic: "${topic}"` }
         ],
         temperature: 0.2,
-        response_format: {
-          type: 'json_schema',
-          json_schema: {
-            name: 'topic_metadata',
-            schema: {
-              type: 'object',
-              properties: {
-                title: { type: 'string' },
-                description: { type: 'string' },
-                tags: { type: 'array', items: { type: 'string' }, minItems: 3, maxItems: 3 }
-              },
-              required: ['title', 'description', 'tags']
-            }
-          }
-        }
+        response_format: { type: 'json_object' }
       }),
     });
 
@@ -515,94 +419,59 @@ Deno.serve(async (req) => {
     }
 
     const parsedContent = {
-      topic: {
-        ...topicMetadata,
-        date: currentDate
-      },
+      topic: { ...topicMetadata, date: currentDate },
       perspectives
     };
 
-    // Search for fact-checks for EACH article's specific content
-    // Uses Google Fact Check API to find real fact-checks from Snopes, PolitiFact, etc.
+    // Search for fact-checks using Google Fact Check API
     const factCheckApiKey = Deno.env.get('GOOGLE_FACT_CHECK_API_KEY');
     
-    if (factCheckApiKey && parsedContent?.perspectives?.length > 0) {
+    if (factCheckApiKey) {
       console.log('Searching fact-checks for each article...');
       
-      // Process each perspective in parallel
       await Promise.all(parsedContent.perspectives.map(async (perspective: any) => {
-        perspective.factChecks = []; // Initialize empty array
+        perspective.factChecks = [];
         
         if (!perspective.headline && !perspective.summary) return;
         
         try {
-          // Search using headline first
-          const queries = [perspective.headline];
+          const query = perspective.headline || perspective.summary?.slice(0, 100);
+          const encodedQuery = encodeURIComponent(query.slice(0, 150));
+          const fcResponse = await fetch(
+            `https://factchecktools.googleapis.com/v1alpha1/claims:search?query=${encodedQuery}&key=${factCheckApiKey}&languageCode=en`,
+            { method: 'GET' }
+          );
           
-          // Add first sentence of summary as secondary query
-          if (perspective.summary) {
-            const firstSentence = perspective.summary.split(/[.!?]/)[0]?.trim();
-            if (firstSentence && firstSentence.length > 20 && firstSentence !== perspective.headline) {
-              queries.push(firstSentence);
-            }
+          if (!fcResponse.ok) return;
+          
+          const fcData = await fcResponse.json();
+          const claims = fcData.claims || [];
+          
+          for (const claim of claims.slice(0, 3)) {
+            const review = claim.claimReview?.[0];
+            if (!review || !review.url) continue;
+            
+            const rating = (review.textualRating || '').toLowerCase();
+            let status = 'disputed';
+            if (rating.includes('true') || rating.includes('correct')) status = 'verified';
+            else if (rating.includes('false') || rating.includes('wrong')) status = 'false';
+            
+            perspective.factChecks.push({
+              claimText: claim.text || '',
+              claimant: claim.claimant || 'Unknown',
+              rating: review.textualRating || '',
+              status,
+              source: review.publisher?.name || 'Fact Checker',
+              sourceUrl: review.url || '',
+              title: review.title || '',
+            });
           }
           
-          const seenUrls = new Set<string>();
-          
-          for (const query of queries) {
-            const encodedQuery = encodeURIComponent(query.slice(0, 150));
-            const fcResponse = await fetch(
-              `https://factchecktools.googleapis.com/v1alpha1/claims:search?query=${encodedQuery}&key=${factCheckApiKey}&languageCode=en`,
-              { method: 'GET' }
-            );
-            
-            if (!fcResponse.ok) continue;
-            
-            const fcData = await fcResponse.json();
-            const claims = fcData.claims || [];
-            
-            for (const claim of claims) {
-              const review = claim.claimReview?.[0];
-              if (!review || !review.url) continue;
-              
-              // Deduplicate by URL
-              if (seenUrls.has(review.url)) continue;
-              seenUrls.add(review.url);
-              
-              const rating = (review.textualRating || '').toLowerCase();
-              let status = 'disputed';
-              if (rating.includes('true') || rating.includes('correct') || rating.includes('accurate')) {
-                status = 'verified';
-              } else if (rating.includes('false') || rating.includes('wrong') || rating.includes('pants on fire')) {
-                status = 'false';
-              } else if (rating.includes('mixed') || rating.includes('partly') || rating.includes('misleading')) {
-                status = 'disputed';
-              }
-              
-              perspective.factChecks.push({
-                claimText: claim.text || '',
-                claimant: claim.claimant || 'Unknown',
-                rating: review.textualRating || '',
-                status,
-                source: review.publisher?.name || 'Fact Checker',
-                sourceUrl: review.url || '',
-                title: review.title || '',
-              });
-            }
-          }
-          
-          // Limit to 3 fact-checks per article
-          perspective.factChecks = perspective.factChecks.slice(0, 3);
-          console.log(`${perspective.perspective} article: ${perspective.factChecks.length} fact-checks found`);
-          
+          console.log(`${perspective.perspective}: ${perspective.factChecks.length} fact-checks`);
         } catch (fcError) {
           console.error(`Fact-check error for ${perspective.perspective}:`, fcError);
         }
       }));
-    } else if (!factCheckApiKey) {
-      console.log('Google Fact Check API key not configured');
-      // Initialize empty factChecks arrays
-      parsedContent.perspectives?.forEach((p: any) => { p.factChecks = []; });
     }
 
     console.log('Successfully analyzed topic with real articles');
