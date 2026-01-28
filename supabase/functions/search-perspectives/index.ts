@@ -129,15 +129,10 @@ async function searchNewsByBias(
   perplexityKey: string,
   bias: 'left' | 'center' | 'right'
 ): Promise<NewsArticle[]> {
-  // Use simpler prompts that work better with Perplexity
-  const sourceDescriptions: Record<string, string> = {
-    left: 'CNN, MSNBC, The Guardian, Washington Post, New York Times, Vox, HuffPost, Slate, The Daily Beast',
-    center: 'Reuters, AP News, BBC, NPR, PBS, Axios, The Hill, USA Today',
-    right: 'Fox News, Wall Street Journal, New York Post, Washington Examiner, Daily Wire, National Review, Breitbart, Newsmax',
-  };
-
-  const query = `Find recent news articles about "${topic}" from these news sources: ${sourceDescriptions[bias]}. Only return articles from actual news websites, not government sites or press releases.`;
-  console.log(`Searching ${bias} sources for:`, topic);
+  // Force results to come ONLY from the allowed domains.
+  // Note: Avoid combining `search_domain_filter` with explicit `site:` queries; that can over-restrict.
+  const query = `Find recent news articles about "${topic}". Return multiple results with citations.`;
+  console.log(`Searching ${bias} sources for:`, topic, 'domains:', validDomains[bias].join(', '));
 
   const response = await fetch('https://api.perplexity.ai/chat/completions', {
     method: 'POST',
@@ -150,7 +145,7 @@ async function searchNewsByBias(
       messages: [
         {
           role: 'system',
-          content: `You are a news research assistant. Find real news articles from the specified sources only. Do not include government websites, press releases, or official announcements.`
+          content: `You are a news research assistant. Only return results from the allowed news domains provided via search_domain_filter. Do not include government websites, advocacy org sites, universities, Wikipedia, or press releases.`
         },
         {
           role: 'user',
@@ -158,6 +153,7 @@ async function searchNewsByBias(
         }
       ],
       search_recency_filter: 'week',
+      search_domain_filter: validDomains[bias],
     }),
   });
 
