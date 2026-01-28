@@ -20,6 +20,64 @@ interface NewsArticle {
   bias?: 'left' | 'center' | 'right';
 }
 
+async function fetchArticleMetadata(url: string): Promise<{ title?: string; snippet?: string }> {
+  // Best-effort HTML title/description extraction so we never show placeholder titles like
+  // "Article from xyz" when the URL is real.
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6500);
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      signal: controller.signal,
+      headers: {
+        // Many news sites block unknown agents; this still isn't perfect, but helps.
+        'User-Agent': 'Mozilla/5.0 (compatible; LovableNewsBot/1.0)',
+        'Accept': 'text/html,application/xhtml+xml'
+      }
+    });
+
+    let html = '';
+    if (res.ok) {
+      html = await res.text();
+    } else {
+      await res.arrayBuffer(); // consume
+    }
+
+    // Fallback: some publishers block bots. r.jina.ai provides a plain-text mirror.
+    // We only use it to extract the title/description from the *same* real URL.
+    if (!html) {
+      try {
+        const proxyRes = await fetch(`https://r.jina.ai/http://${url.replace(/^https?:\/\//, '')}`, {
+          method: 'GET',
+          signal: controller.signal,
+          headers: { 'Accept': 'text/plain' },
+        });
+        if (proxyRes.ok) html = await proxyRes.text();
+        else await proxyRes.arrayBuffer();
+      } catch {
+        // ignore
+      }
+    }
+
+    if (!html) return {};
+    // Basic extraction: og:title -> <title>
+    const ogTitle = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["'][^>]*>/i)?.[1];
+    const titleTag = html.match(/<title[^>]*>([^<]{3,200})<\/title>/i)?.[1];
+    const metaDesc = html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']{10,400})["'][^>]*>/i)?.[1];
+    const ogDesc = html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']{10,400})["'][^>]*>/i)?.[1];
+
+    const clean = (s?: string) => (s ? s.replace(/\s+/g, ' ').trim() : undefined);
+    return {
+      title: clean(ogTitle) || clean(titleTag),
+      snippet: clean(ogDesc) || clean(metaDesc),
+    };
+  } catch {
+    return {};
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function normalizeTopicInput(raw: unknown): string {
   const str = typeof raw === 'string' ? raw : '';
   return str
@@ -58,6 +116,30 @@ function detectOutletFromUrl(url: string): string {
     return parts.slice(0, -1).join(' ').replace(/-/g, ' ');
   } catch {
     return 'Unknown Source';
+  }
+}
+
+function titleFromUrlSlug(url: string): string {
+  try {
+    const u = new URL(url);
+    const parts = u.pathname.split('/').filter(Boolean);
+    const last = parts[parts.length - 1] || '';
+    const slug = decodeURIComponent(last)
+      .replace(/\.[a-z0-9]+$/i, '')
+      .replace(/[-_]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!slug || slug.length < 6) return '';
+    // Title-case lightly (avoid shouting); keep acronyms as-is.
+    return slug
+      .split(' ')
+      .map((w) => {
+        if (w.toUpperCase() === w && w.length <= 5) return w; // likely acronym
+        return w.charAt(0).toUpperCase() + w.slice(1);
+      })
+      .join(' ');
+  } catch {
+    return '';
   }
 }
 
@@ -160,7 +242,13 @@ async function searchNewsByBias(
     right: 'site:foxnews.com OR site:wsj.com OR site:dailywire.com OR site:nypost.com OR site:washingtonexaminer.com OR site:nationalreview.com OR site:breitbart.com OR site:newsmax.com',
   };
 
-  const strictQuery = `Find recent news articles about "${topic}". Return multiple results with citations.`;
+  const desiredCount = 6;
+  const strictQuery = `Find up to ${desiredCount} recent news articles about "${topic}" from the allowed sources.
+Return results with: (1) the exact on-page headline/title, (2) the publisher/outlet name, (3) the direct article URL.
+Do NOT use placeholders like "Article from ...".`;
+  const strictQuery2 = `Find up to ${desiredCount} additional recent news articles about "${topic}" from the allowed sources.
+Return results with: exact on-page headline/title, outlet, and direct article URL.
+Do NOT use placeholders like "Article from ...".`;
   const fallbackQuery = `${topic} news (${siteFilters[bias]})`;
 
   console.log(`Searching ${bias} sources for:`, topic, 'domains:', validDomains[bias].join(', '));
@@ -177,12 +265,39 @@ async function searchNewsByBias(
         messages: [
           {
             role: 'system',
-            content: `You are a news research assistant. Return real news articles with citations. Do not include government websites, advocacy org sites, universities, Wikipedia, or press releases.`
+            content: `You are a news research assistant. Return real news articles from the allowed publishers only. Do not include government websites, advocacy org sites, universities, Wikipedia, or press releases.`
           },
           { role: 'user', content: opts.query }
         ],
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'news_results',
+            schema: {
+              type: 'object',
+              properties: {
+                results: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      url: { type: 'string' },
+                      title: { type: 'string' },
+                      outlet: { type: 'string' },
+                      snippet: { type: 'string' },
+                    },
+                    required: ['url', 'title'],
+                  },
+                },
+              },
+              required: ['results'],
+            },
+          },
+        },
         search_recency_filter: opts.recency,
         ...(opts.useDomainFilter ? { search_domain_filter: validDomains[bias] } : {}),
+        temperature: 0.2,
+        max_tokens: 1200,
       }),
     });
 
@@ -195,52 +310,87 @@ async function searchNewsByBias(
     return await r.json();
   };
 
-  let data = await runPerplexity({ query: strictQuery, useDomainFilter: true, recency: 'week' });
-  let citations: string[] = (data?.citations as string[]) || [];
+  const extractStructuredResults = (data: any): PerplexityResult[] => {
+    const raw = data?.choices?.[0]?.message?.content;
+    if (!raw || typeof raw !== 'string') return [];
+    try {
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
+      const arr = Array.isArray(parsed?.results) ? parsed.results : [];
+      return arr
+        .filter((r: any) => r && typeof r.url === 'string' && typeof r.title === 'string')
+        .map((r: any) => ({
+          url: r.url,
+          title: r.title,
+          snippet: typeof r.snippet === 'string' ? r.snippet : '',
+        }));
+    } catch {
+      return [];
+    }
+  };
 
-  // If strict domain filtering yields no citations, retry with a broader query.
-  if (citations.length === 0) {
-    console.log(`${bias} strict search returned 0 citations; retrying with fallback query`);
-    data = await runPerplexity({ query: fallbackQuery, useDomainFilter: false, recency: 'month' });
-    citations = (data?.citations as string[]) || [];
+  // Pass 1: strict domain filter (week)
+  let data = await runPerplexity({ query: strictQuery, useDomainFilter: true, recency: 'week' });
+  let structured = extractStructuredResults(data);
+
+  // Pass 1b: if Perplexity returns too few citations, run a second strict query variant.
+  if (structured.length > 0 && structured.length < desiredCount) {
+    const data2 = await runPerplexity({ query: strictQuery2, useDomainFilter: true, recency: 'week' });
+    structured = [...structured, ...extractStructuredResults(data2)];
   }
 
-  const content = data?.choices?.[0]?.message?.content || '';
-  
-  console.log(`${bias} search found ${citations.length} citations (before filtering)`);
+  // Pass 2: fallback (month) with explicit site filters in query, then we apply allowlist ourselves.
+  if (structured.length === 0) {
+    console.log(`${bias} strict search returned 0 citations; retrying with fallback query`);
+    data = await runPerplexity({ query: fallbackQuery, useDomainFilter: false, recency: 'month' });
+    structured = extractStructuredResults(data);
+  }
 
-  // Extract articles from citations and filter to valid sources
-  const normalized = citations
-    .filter((url: string) => url && typeof url === 'string' && url.startsWith('http'))
-    .map((url: string) => normalizeCitationUrl(url))
-    .filter((url: string, idx: number, arr: string[]) => arr.indexOf(url) === idx);
+  console.log(`${bias} search produced ${structured.length} structured results (before filtering)`);
+
+  // Normalize/dedupe URLs then filter to valid sources
+  const normalized = structured
+    .filter((r) => r.url && typeof r.url === 'string' && r.url.startsWith('http'))
+    .map((r) => ({ ...r, url: normalizeCitationUrl(r.url) }))
+    .filter((r, idx, arr) => arr.findIndex((x) => x.url === r.url) === idx);
 
   if (normalized.length > 0) {
-    console.log(`${bias} citation hostnames (sample):`, normalized.slice(0, 5).map((u) => {
+    console.log(`${bias} result hostnames (sample):`, normalized.slice(0, 5).map((u) => {
       try {
-        return new URL(u).hostname;
+        return new URL(u.url).hostname;
       } catch {
         return 'invalid-url';
       }
     }));
   }
 
-  const articles: NewsArticle[] = normalized
-    .filter((url: string) => isValidSourceForBias(url, bias))
-    .map((url: string) => {
-      const outlet = detectOutletFromUrl(url);
-      const urlDomain = new URL(url).hostname.replace('www.', '');
-      // Try to extract title from content
-      const titleMatch = content.match(new RegExp(`["']([^"']{10,100})["'][^"']*${urlDomain.split('.')[0]}`, 'i'));
-      
-      return {
-        url,
-        title: titleMatch?.[1] || `Article from ${outlet}`,
-        outlet,
-        snippet: '',
-        bias: bias,
-      };
-    });
+  const filtered = normalized
+    .filter((r) => isValidSourceForBias(r.url, bias))
+    .slice(0, desiredCount);
+
+  // As a last resort (when provider returns a blank title), try to fetch metadata.
+  const maybeFetch = await Promise.all(
+    filtered.map(async (r) => {
+      const t = (r.title || '').trim();
+      if (t && t.length >= 4 && !/^article\s+from\s+/i.test(t)) return { title: t, snippet: r.snippet || '' };
+      const meta = await fetchArticleMetadata(r.url);
+      return { title: meta.title || t, snippet: meta.snippet || r.snippet || '' };
+    })
+  );
+
+  const articles: NewsArticle[] = filtered.map((r, idx) => {
+    const outlet = detectOutletFromUrl(r.url);
+    const meta = maybeFetch[idx] || {};
+    const finalTitle = (meta.title || r.title || '').trim();
+    const slugTitle = titleFromUrlSlug(r.url);
+    return {
+      url: r.url,
+      title: slugTitle || (finalTitle && finalTitle.length >= 4 && !/^article\s+from\s+/i.test(finalTitle) ? finalTitle : '' ) || `Article from ${outlet}`,
+      outlet,
+      snippet: meta.snippet || '',
+      bias,
+    };
+  });
 
   console.log(`${bias} search: ${articles.length} valid articles after filtering`);
   return articles;
@@ -381,7 +531,7 @@ Deno.serve(async (req) => {
       formatArticleList(centerArticles, 'CENTER') + 
       formatArticleList(rightArticles, 'RIGHT-LEANING');
 
-    const systemPrompt = `You are a news formatter. Your job is to organize the provided articles into a structured JSON format.
+     const systemPrompt = `You are a news formatter. Your job is to organize the provided articles into a structured JSON format.
 
 TODAY'S DATE IS: ${currentDate}
 ${articleContext}
@@ -389,8 +539,9 @@ ${articleContext}
 CRITICAL RULES:
 1. ONLY include articles that are explicitly listed above - DO NOT invent or add any articles
 2. Each article MUST stay in its original category (left articles in left, center in center, right in right)
-3. Write a neutral, factual 1-2 sentence summary for each article based on its headline - DO NOT add political spin or framing
-4. Use the EXACT outlet name and URL from the list above
+3. For each article, set "headline" to the EXACT "Title" provided above (no placeholders like "Article from ...")
+4. Write a neutral, factual 1-2 sentence summary for each article based on its headline - DO NOT add political spin or framing
+5. Use the EXACT outlet name and URL from the list above
 5. If a category has no articles, return an empty articles array for that perspective
 
 Respond with valid JSON only. No markdown, no code blocks.
@@ -540,8 +691,10 @@ Each article object: {"outlet": "...", "headline": "...", "summary": "...", "tim
 
           return {
             ...article,
-            outlet: typeof article?.outlet === 'string' && article.outlet.trim() ? article.outlet : match.outlet,
-            headline: typeof article?.headline === 'string' && article.headline.trim() ? article.headline : match.title,
+            // Always enforce outlet/headline/url from the real-article pool.
+            // This prevents placeholder headlines like "Article from ..." from leaking into the UI.
+            outlet: match.outlet,
+            headline: match.title,
             articleUrl: match.url,
           };
         });
