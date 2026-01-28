@@ -156,9 +156,17 @@ function isArticlePath(url: string): boolean {
   }
 }
 
-// Single broad search that returns real citations, then classify by bias
-async function searchAllNews(topic: string, perplexityKey: string): Promise<NewsArticle[]> {
-  console.log(`Searching all news sources for: ${topic}`);
+// Search a specific bias category by constraining to those domains
+async function searchByBias(
+  topic: string, 
+  bias: 'left' | 'center' | 'right',
+  perplexityKey: string
+): Promise<NewsArticle[]> {
+  const domains = domainsByBias[bias];
+  // Perplexity limits to 5 domains per request, so pick top ones
+  const topDomains = domains.slice(0, 5);
+  
+  console.log(`Searching ${bias} sources for: ${topic} (domains: ${topDomains.join(', ')})`);
 
   const response = await fetch('https://api.perplexity.ai/chat/completions', {
     method: 'POST',
@@ -171,16 +179,17 @@ async function searchAllNews(topic: string, perplexityKey: string): Promise<News
       messages: [
         {
           role: 'user',
-          content: `Find recent news articles about "${topic}". Provide a factual summary of what each source reports about this topic.`
+          content: `Find recent news articles about "${topic}" from major news outlets. Summarize what each source reports.`
         }
       ],
-      search_recency_filter: 'month',
+      search_recency_filter: 'week',
+      search_domain_filter: topDomains,
     }),
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error('Perplexity search error:', errorText);
+    console.error(`Perplexity ${bias} search error:`, errorText);
     return [];
   }
 
@@ -188,8 +197,10 @@ async function searchAllNews(topic: string, perplexityKey: string): Promise<News
   const citations: string[] = data.citations || [];
   const content = data.choices?.[0]?.message?.content || '';
   
-  console.log(`Search found ${citations.length} citations`);
-  console.log(`Content preview:`, content.slice(0, 300));
+  console.log(`${bias} search found ${citations.length} citations`);
+  if (citations.length > 0) {
+    console.log(`${bias} citations:`, citations.slice(0, 3));
+  }
 
   const articles: NewsArticle[] = [];
   
@@ -200,15 +211,9 @@ async function searchAllNews(topic: string, perplexityKey: string): Promise<News
       continue;
     }
     
-    const bias = classifyUrlBias(url);
-    if (!bias) {
-      console.log(`Skipping unclassified URL: ${url}`);
-      continue;
-    }
-    
     const outlet = detectOutletFromUrl(url);
     
-    // Try to extract summary for this source from content
+    // Extract summary for this source from content
     const outletLower = outlet.toLowerCase();
     const summaryPatterns = [
       new RegExp(`${outletLower}[^.]*(?:reports?|says?|states?)[^.]+\\.`, 'i'),
@@ -224,6 +229,11 @@ async function searchAllNews(topic: string, perplexityKey: string): Promise<News
       }
     }
     
+    // If no specific snippet found, use first ~200 chars of content
+    if (!snippet && content) {
+      snippet = content.slice(0, 200).trim() + '...';
+    }
+    
     articles.push({
       url,
       title: `Article from ${outlet}`,
@@ -233,13 +243,24 @@ async function searchAllNews(topic: string, perplexityKey: string): Promise<News
     });
   }
   
-  console.log(`Classified articles: left=${articles.filter(a => a.bias === 'left').length}, center=${articles.filter(a => a.bias === 'center').length}, right=${articles.filter(a => a.bias === 'right').length}`);
+  console.log(`${bias} articles found: ${articles.length}`);
   return articles;
 }
 
+// Search all three bias categories in parallel
 async function searchNews(topic: string, perplexityKey: string): Promise<NewsArticle[]> {
-  // Use single broad search and classify results by bias
-  return await searchAllNews(topic, perplexityKey);
+  console.log(`Searching all perspectives for: ${topic}`);
+  
+  const [leftArticles, centerArticles, rightArticles] = await Promise.all([
+    searchByBias(topic, 'left', perplexityKey),
+    searchByBias(topic, 'center', perplexityKey),
+    searchByBias(topic, 'right', perplexityKey),
+  ]);
+  
+  const allArticles = [...leftArticles, ...centerArticles, ...rightArticles];
+  console.log(`Total articles: left=${leftArticles.length}, center=${centerArticles.length}, right=${rightArticles.length}`);
+  
+  return allArticles;
 }
 
 function pickByBias(articles: NewsArticle[], bias: 'left' | 'center' | 'right'): NewsArticle | undefined {
