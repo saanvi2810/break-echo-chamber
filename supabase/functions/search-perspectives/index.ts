@@ -243,6 +243,7 @@ async function searchNewsByBias(
   };
 
   const desiredCount = 6;
+  const minRequired = 1;
   const strictQuery = `Find up to ${desiredCount} recent news articles about "${topic}" from the allowed sources.
 Return results with: (1) the exact on-page headline/title, (2) the publisher/outlet name, (3) the direct article URL.
 Do NOT use placeholders like "Article from ...".`;
@@ -253,7 +254,7 @@ Do NOT use placeholders like "Article from ...".`;
 
   console.log(`Searching ${bias} sources for:`, topic, 'domains:', validDomains[bias].join(', '));
 
-  const runPerplexity = async (opts: { query: string; useDomainFilter: boolean; recency: 'week' | 'month' }) => {
+  const runPerplexity = async (opts: { query: string; useDomainFilter: boolean; recency: 'day' | 'week' | 'month' | 'year' }) => {
     const r = await fetch('https://api.perplexity.ai/chat/completions', {
       method: 'POST',
       headers: {
@@ -329,21 +330,46 @@ Do NOT use placeholders like "Article from ...".`;
     }
   };
 
+  const dedupeByUrl = (items: PerplexityResult[]) =>
+    items.filter((it, idx, arr) => arr.findIndex((x) => x.url === it.url) === idx);
+
   // Pass 1: strict domain filter (week)
   let data = await runPerplexity({ query: strictQuery, useDomainFilter: true, recency: 'week' });
   let structured = extractStructuredResults(data);
 
-  // Pass 1b: if Perplexity returns too few citations, run a second strict query variant.
+  // Pass 1b: if too few results, run a second strict query variant.
   if (structured.length > 0 && structured.length < desiredCount) {
     const data2 = await runPerplexity({ query: strictQuery2, useDomainFilter: true, recency: 'week' });
-    structured = [...structured, ...extractStructuredResults(data2)];
+    structured = dedupeByUrl([...structured, ...extractStructuredResults(data2)]);
+  }
+
+  // Pass 1c: broaden recency while still using domain_filter (month).
+  if (structured.length < minRequired) {
+    const dataMonth = await runPerplexity({ query: strictQuery, useDomainFilter: true, recency: 'month' });
+    structured = dedupeByUrl([...structured, ...extractStructuredResults(dataMonth)]);
   }
 
   // Pass 2: fallback (month) with explicit site filters in query, then we apply allowlist ourselves.
-  if (structured.length === 0) {
-    console.log(`${bias} strict search returned 0 citations; retrying with fallback query`);
-    data = await runPerplexity({ query: fallbackQuery, useDomainFilter: false, recency: 'month' });
-    structured = extractStructuredResults(data);
+  if (structured.length < minRequired) {
+    console.log(`${bias} strict (domain-filtered) returned <${minRequired}; retrying with fallback query`);
+    const dataFallback = await runPerplexity({ query: fallbackQuery, useDomainFilter: false, recency: 'month' });
+    structured = dedupeByUrl([...structured, ...extractStructuredResults(dataFallback)]);
+  }
+
+  // Pass 3: broaden further (year) with site filters.
+  if (structured.length < minRequired) {
+    const yearQuery = `${topic} (${siteFilters[bias]})`;
+    console.log(`${bias} still <${minRequired}; broadening to year recency`);
+    const dataYear = await runPerplexity({ query: yearQuery, useDomainFilter: false, recency: 'year' });
+    structured = dedupeByUrl([...structured, ...extractStructuredResults(dataYear)]);
+  }
+
+  // Pass 4: fully unconstrained query (year), then we filter by our allowlist.
+  if (structured.length < minRequired) {
+    const openQuery = `${topic} news article`;
+    console.log(`${bias} still <${minRequired}; running unconstrained search then filtering to allowlist`);
+    const dataOpen = await runPerplexity({ query: openQuery, useDomainFilter: false, recency: 'year' });
+    structured = dedupeByUrl([...structured, ...extractStructuredResults(dataOpen)]);
   }
 
   console.log(`${bias} search produced ${structured.length} structured results (before filtering)`);
@@ -367,6 +393,12 @@ Do NOT use placeholders like "Article from ...".`;
   const filtered = normalized
     .filter((r) => isValidSourceForBias(r.url, bias))
     .slice(0, desiredCount);
+
+  // If we still have nothing after broadening, return empty (never invent articles).
+  if (filtered.length < minRequired) {
+    console.log(`${bias} search: 0 valid articles after broadening; returning empty`);
+    return [];
+  }
 
   // As a last resort (when provider returns a blank title), try to fetch metadata.
   const maybeFetch = await Promise.all(
