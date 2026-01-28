@@ -155,30 +155,37 @@ function detectBias(outlet: string, url: string): 'left' | 'center' | 'right' {
   return 'center';
 }
 
-// Valid domains for each bias - expanded for better coverage
+// Valid domains for each bias - based on AllSides Media Bias Chart v11
+// LEFT = AllSides "Left" + "Lean Left" columns
+// CENTER = AllSides "Center" column
+// RIGHT = AllSides "Lean Right" + "Right" columns
 const validDomains: Record<string, string[]> = {
   left: [
-    // mainstream left-leaning + major broadcast/newsroom sites
-    'theguardian.com', 'msnbc.com', 'huffpost.com', 'vox.com', 'slate.com', 'thedailybeast.com',
-    'motherjones.com', 'theatlantic.com', 'nytimes.com', 'washingtonpost.com', 'cnn.com',
-    'nbcnews.com', 'abcnews.go.com', 'cbsnews.com',
-    // expanded list
-    'salon.com', 'thenation.com', 'newyorker.com', 'latimes.com', 'bostonglobe.com',
-    'talkingpointsmemo.com', 'prospect.org', 'commondreams.org', 'democracynow.org',
+    // LEFT column
+    'alternet.org', 'apnews.com', 'theatlantic.com', 'thedailybeast.com', 'democracynow.org',
+    'theguardian.com', 'huffpost.com', 'theintercept.com', 'jacobin.com', 'motherjones.com',
+    'msnbc.com', 'thenation.com', 'newyorker.com', 'slate.com', 'vox.com',
+    // LEAN LEFT column
+    'abcnews.go.com', 'axios.com', 'bloomberg.com', 'cbsnews.com', 'cnbc.com', 'cnn.com',
+    'insider.com', 'businessinsider.com', 'thehill.com', 'nbcnews.com', 'nytimes.com', 'npr.org',
+    'politico.com', 'propublica.org', 'semafor.com', 'time.com', 'usatoday.com',
+    'washingtonpost.com', 'news.yahoo.com',
   ],
   center: [
-    // wire services + mainstream centrist outlets
-    'reuters.com', 'apnews.com', 'bbc.com', 'npr.org', 'axios.com', 'thehill.com', 'pbs.org', 'usatoday.com',
-    'politico.com',
-    // expanded list
-    'csmonitor.com', 'bloomberg.com', 'ft.com', 'economist.com', 'time.com', 'newsweek.com',
-    'abcnews.go.com', 'cbsnews.com', 'nbcnews.com', // overlap is intentional; center can cite major broadcast
+    // CENTER column
+    '1440.io', 'bbc.com', 'csmonitor.com', 'forbes.com', 'marketwatch.com', 'morningbrew.com',
+    'newsnationnow.com', 'newsweek.com', 'reason.com', 'reuters.com', 'tangle.media',
+    'wsj.com', // WSJ news section is center per chart
   ],
   right: [
-    'foxnews.com', 'wsj.com', 'dailywire.com', 'nypost.com', 'washingtonexaminer.com', 'nationalreview.com',
-    'breitbart.com', 'theblaze.com', 'dailycaller.com', 'newsmax.com',
-    // expanded list
-    'townhall.com', 'thefederalist.com', 'freebeacon.com', 'spectator.org', 'pjmedia.com', 'americanthinker.com', 'oann.com',
+    // LEAN RIGHT column
+    'dailymail.co.uk', 'thedispatch.com', 'theepochtimes.com', 'foxbusiness.com', 'thefp.com',
+    'justthenews.com', 'nationalreview.com', 'nypost.com', 'realclearpolitics.com',
+    'upward.news', 'washingtonexaminer.com', 'washingtontimes.com', 'zerohedge.com',
+    // RIGHT column
+    'theamericanconservative.com', 'spectator.org', 'theblaze.com', 'breitbart.com', 'cbn.com',
+    'dailycaller.com', 'dailywire.com', 'foxnews.com', 'thefederalist.com', 'ijr.com',
+    'newsmax.com', 'oann.com', 'thepostmillennial.com', 'freebeacon.com',
   ],
 };
 
