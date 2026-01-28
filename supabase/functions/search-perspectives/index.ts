@@ -103,12 +103,17 @@ async function searchNewsByBias(
   bias: 'left' | 'center' | 'right'
 ): Promise<NewsArticle[]> {
   const allDomains = domainsByBias[bias];
-  // Perplexity has max 20 domain filter limit - use first 20 for primary search
-  const domains = allDomains.slice(0, 20);
+  // Use top 10 domains for explicit site: query (more reliable than search_domain_filter)
+  const topDomains = allDomains.slice(0, 10);
   
-  console.log(`Searching ${bias} sources for: ${topic} domains: ${domains.join(', ')}`);
+  // Build explicit site filter query - this is more reliable than the API parameter
+  const siteFilter = topDomains.map(d => `site:${d}`).join(' OR ');
+  const searchQuery = `${topic} (${siteFilter})`;
+  
+  console.log(`Searching ${bias} sources for: ${topic}`);
+  console.log(`Query: ${searchQuery.slice(0, 200)}...`);
 
-  // Ask Perplexity to summarize actual article content, not just find URLs
+  // Ask Perplexity to find and summarize actual articles
   const response = await fetch('https://api.perplexity.ai/chat/completions', {
     method: 'POST',
     headers: {
@@ -120,16 +125,18 @@ async function searchNewsByBias(
       messages: [
         {
           role: 'user',
-          content: `Find recent news articles about "${topic}" and provide a factual summary of what each article actually says. For each article found, provide:
-1. The exact headline
-2. The source/outlet name
-3. A 2-3 sentence factual summary of the article's actual content and key points (not interpretation or spin)
+          content: `Find recent news articles about "${topic}" from these specific sources: ${topDomains.join(', ')}.
 
-Focus on what the articles actually report, not political framing.`
+For each article found, provide:
+1. The exact headline
+2. The source/outlet name  
+3. The article URL
+4. A 2-3 sentence factual summary of what the article actually reports
+
+Only include articles from the sources listed above. Focus on factual reporting, not interpretation.`
         }
       ],
-      search_recency_filter: 'week',
-      search_domain_filter: domains,
+      search_recency_filter: 'month', // Broader time range for better results
     }),
   });
 
@@ -146,75 +153,116 @@ Focus on what the articles actually report, not political framing.`
   console.log(`${bias} search found ${citations.length} citations`);
   console.log(`${bias} content preview:`, content.slice(0, 500));
 
-  // Accept URLs from ALL domains in our full list (not just the 20 used in filter)
-  const validDomainsSet = new Set(allDomains.map(d => d.toLowerCase()));
-  
-  const articles: NewsArticle[] = citations
-    .filter((url: string) => {
-      if (!url || typeof url !== 'string' || !url.startsWith('http')) return false;
+  const articles: NewsArticle[] = [];
+
+  // Strategy 1: Use citations if available
+  if (citations.length > 0) {
+    for (const url of citations) {
+      if (!url || typeof url !== 'string' || !url.startsWith('http')) continue;
+      
       try {
         const hostname = new URL(url).hostname.toLowerCase().replace('www.', '');
-        return validDomainsSet.has(hostname) || Array.from(validDomainsSet).some(d => hostname.includes(d.replace('www.', '')));
+        // Check if URL is from our allowed domains
+        const isValid = allDomains.some(d => hostname.includes(d.replace('www.', '')));
+        if (!isValid) continue;
+        
+        const outlet = detectOutletFromUrl(url);
+        const urlDomain = hostname.split('.')[0];
+        
+        // Try to extract info about this article from content
+        let title = `Article from ${outlet}`;
+        let snippet = '';
+        
+        // Look for headline patterns
+        const headlinePatterns = [
+          new RegExp(`\\*\\*(?:Headline:?)?\\s*\\*\\*\\s*([^\\n*]+)`, 'gim'),
+          new RegExp(`(?:^|\\n)\\d+\\.\\s*\\*?\\*?(?:Headline:?)?\\s*\\*?\\*?\\s*([^\\n]+)`, 'gim'),
+        ];
+        
+        for (const pattern of headlinePatterns) {
+          const matches = [...content.matchAll(pattern)];
+          for (const match of matches) {
+            if (match[1] && match[1].length > 15 && match[1].length < 200) {
+              title = match[1].replace(/\*+/g, '').trim();
+              break;
+            }
+          }
+        }
+        
+        // Look for summary patterns
+        const summaryPatterns = [
+          new RegExp(`\\*\\*Summary:?\\*\\*\\s*([^\\n]+(?:\\n[^\\n*]+)*)`, 'gim'),
+          new RegExp(`(?:${urlDomain}|${outlet})[^.]*?[\\.:]\\s*([^\\n]{50,300})`, 'i'),
+        ];
+        
+        for (const pattern of summaryPatterns) {
+          const match = content.match(pattern);
+          if (match && match[1]) {
+            snippet = match[1].trim().slice(0, 400);
+            break;
+          }
+        }
+        
+        articles.push({
+          url,
+          title,
+          outlet,
+          snippet: snippet || '',
+          bias,
+        });
       } catch {
-        return false;
+        continue;
       }
-    })
-    .map((url: string, index: number) => {
-      const outlet = detectOutletFromUrl(url);
+    }
+  }
+  
+  // Strategy 2: Parse articles directly from content if no valid citations
+  if (articles.length === 0 && content.length > 100) {
+    console.log(`${bias}: No citations, parsing content directly`);
+    
+    // Parse structured article blocks from the content
+    const articleBlocks = content.split(/(?=\*\*\d+\.|(?:^|\n)\d+\.)/);
+    
+    for (const block of articleBlocks) {
+      if (block.length < 50) continue;
       
-      // Try to extract title and summary from Perplexity's response
-      // The content contains actual article summaries
-      let title = `Article from ${outlet}`;
-      let snippet = '';
+      // Extract headline
+      const headlineMatch = block.match(/\*\*(?:Headline:?\s*)?\*\*\s*([^\n*]+)/i) 
+        || block.match(/\d+\.\s*\*?\*?(?:Headline:?\s*)?\*?\*?\s*([^\n]+)/i);
       
-      // Look for the outlet name or URL domain in the content to find relevant summary
-      const urlDomain = new URL(url).hostname.replace('www.', '').split('.')[0];
-      const outletLower = outlet.toLowerCase();
+      // Extract source
+      const sourceMatch = block.match(/\*\*Source:?\*\*\s*([^\n*]+)/i)
+        || block.match(/Source:?\s*([A-Za-z][A-Za-z\s]+?)(?:\n|$)/i);
       
-      // Try to find a section about this source in the content
-      const contentLower = content.toLowerCase();
-      const patterns = [
-        new RegExp(`${outletLower}[^.]*reports?[^.]+\\.`, 'i'),
-        new RegExp(`${outletLower}[^.]*states?[^.]+\\.`, 'i'),
-        new RegExp(`${outletLower}[^.]*says?[^.]+\\.`, 'i'),
-        new RegExp(`according to ${outletLower}[^.]+\\.`, 'i'),
-        new RegExp(`${urlDomain}[^.]*:\\s*[^.]+\\.`, 'i'),
-      ];
+      // Extract URL
+      const urlMatch = block.match(/\*\*(?:URL|Article URL|Link):?\*\*\s*(https?:\/\/[^\s\n]+)/i)
+        || block.match(/(https?:\/\/[^\s\n\[\]]+)/);
       
-      for (const pattern of patterns) {
-        const match = content.match(pattern);
-        if (match) {
-          snippet = match[0].trim();
-          break;
+      // Extract summary
+      const summaryMatch = block.match(/\*\*Summary:?\*\*\s*([^\n]+(?:\n(?!\*\*)[^\n]+)*)/i)
+        || block.match(/(?:Summary|reports?|says?)[:\s]+([^*\n]{50,400})/i);
+      
+      if (headlineMatch || sourceMatch) {
+        const title = headlineMatch?.[1]?.replace(/\*+/g, '').trim() || 'Article';
+        const outlet = sourceMatch?.[1]?.replace(/\*+/g, '').trim() || 'News Source';
+        const url = urlMatch?.[1]?.trim() || '';
+        const snippet = summaryMatch?.[1]?.replace(/\*+/g, '').trim() || '';
+        
+        // Only add if we have enough info
+        if (title.length > 10 && (url || outlet !== 'News Source')) {
+          articles.push({
+            url: url || `#${bias}-${articles.length}`,
+            title,
+            outlet,
+            snippet,
+            bias,
+          });
         }
       }
-      
-      // If no specific match, try to extract from numbered list format
-      if (!snippet) {
-        const numberedPattern = new RegExp(`\\d+\\.\\s*\\*?\\*?([^*\\n]+)\\*?\\*?[^\\n]*${urlDomain}[^\\n]*`, 'i');
-        const numMatch = content.match(numberedPattern);
-        if (numMatch) {
-          title = numMatch[1]?.trim() || title;
-        }
-      }
-      
-      // Extract headline if mentioned with quotes
-      const headlinePattern = new RegExp(`[""]([^""]{15,150})[""][^""]*(?:${outletLower}|${urlDomain})`, 'i');
-      const headlineMatch = content.match(headlinePattern);
-      if (headlineMatch) {
-        title = headlineMatch[1].trim();
-      }
-      
-      return {
-        url,
-        title,
-        outlet,
-        snippet: snippet || content.slice(0, 300), // Fall back to general content
-        bias: bias,
-      };
-    });
+    }
+  }
 
-  console.log(`${bias} search: ${articles.length} valid articles after filtering`);
+  console.log(`${bias} search: ${articles.length} articles extracted`);
   return articles;
 }
 
