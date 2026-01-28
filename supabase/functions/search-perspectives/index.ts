@@ -356,95 +356,88 @@ The JSON must follow this exact structure:
     // Enforce real URLs (prevents hallucinated/fake links)
     enforceRealArticleUrls(parsedContent, realArticles);
 
-    // Search for fact-checks based on actual article content (headlines + summaries)
+    // Search for fact-checks for EACH article's specific content
     // Uses Google Fact Check API to find real fact-checks from Snopes, PolitiFact, etc.
-    let articleFactChecks: any[] = [];
     const factCheckApiKey = Deno.env.get('GOOGLE_FACT_CHECK_API_KEY');
     
     if (factCheckApiKey && parsedContent?.perspectives?.length > 0) {
-      try {
-        // Build search queries from actual article content
-        const searchQueries: string[] = [];
-        for (const perspective of parsedContent.perspectives) {
-          if (perspective.headline) {
-            searchQueries.push(perspective.headline);
-          }
-          // Also search key phrases from summaries
+      console.log('Searching fact-checks for each article...');
+      
+      // Process each perspective in parallel
+      await Promise.all(parsedContent.perspectives.map(async (perspective: any) => {
+        perspective.factChecks = []; // Initialize empty array
+        
+        if (!perspective.headline && !perspective.summary) return;
+        
+        try {
+          // Search using headline first
+          const queries = [perspective.headline];
+          
+          // Add first sentence of summary as secondary query
           if (perspective.summary) {
-            // Take first sentence of summary as a search query
             const firstSentence = perspective.summary.split(/[.!?]/)[0]?.trim();
-            if (firstSentence && firstSentence.length > 20) {
-              searchQueries.push(firstSentence);
+            if (firstSentence && firstSentence.length > 20 && firstSentence !== perspective.headline) {
+              queries.push(firstSentence);
             }
           }
-        }
-        
-        console.log(`Searching fact-checks for ${searchQueries.length} article-based queries`);
-        
-        // Search each query in parallel and deduplicate results
-        const factCheckPromises = searchQueries.slice(0, 6).map(async (query) => {
-          const encodedQuery = encodeURIComponent(query.slice(0, 150));
-          const fcResponse = await fetch(
-            `https://factchecktools.googleapis.com/v1alpha1/claims:search?query=${encodedQuery}&key=${factCheckApiKey}&languageCode=en`,
-            { method: 'GET' }
-          );
           
-          if (!fcResponse.ok) {
-            console.log(`Fact-check query failed: ${query.slice(0, 50)}...`);
-            return [];
-          }
+          const seenUrls = new Set<string>();
           
-          const fcData = await fcResponse.json();
-          return fcData.claims || [];
-        });
-        
-        const allResults = await Promise.all(factCheckPromises);
-        const seenUrls = new Set<string>();
-        
-        for (const claims of allResults) {
-          for (const claim of claims) {
-            const review = claim.claimReview?.[0];
-            if (!review || !review.url) continue;
+          for (const query of queries) {
+            const encodedQuery = encodeURIComponent(query.slice(0, 150));
+            const fcResponse = await fetch(
+              `https://factchecktools.googleapis.com/v1alpha1/claims:search?query=${encodedQuery}&key=${factCheckApiKey}&languageCode=en`,
+              { method: 'GET' }
+            );
             
-            // Deduplicate by URL
-            if (seenUrls.has(review.url)) continue;
-            seenUrls.add(review.url);
+            if (!fcResponse.ok) continue;
             
-            const rating = (review.textualRating || '').toLowerCase();
-            let status = 'disputed';
-            if (rating.includes('true') || rating.includes('correct') || rating.includes('accurate')) {
-              status = 'verified';
-            } else if (rating.includes('false') || rating.includes('wrong') || rating.includes('pants on fire')) {
-              status = 'false';
-            } else if (rating.includes('mixed') || rating.includes('partly') || rating.includes('misleading')) {
-              status = 'disputed';
+            const fcData = await fcResponse.json();
+            const claims = fcData.claims || [];
+            
+            for (const claim of claims) {
+              const review = claim.claimReview?.[0];
+              if (!review || !review.url) continue;
+              
+              // Deduplicate by URL
+              if (seenUrls.has(review.url)) continue;
+              seenUrls.add(review.url);
+              
+              const rating = (review.textualRating || '').toLowerCase();
+              let status = 'disputed';
+              if (rating.includes('true') || rating.includes('correct') || rating.includes('accurate')) {
+                status = 'verified';
+              } else if (rating.includes('false') || rating.includes('wrong') || rating.includes('pants on fire')) {
+                status = 'false';
+              } else if (rating.includes('mixed') || rating.includes('partly') || rating.includes('misleading')) {
+                status = 'disputed';
+              }
+              
+              perspective.factChecks.push({
+                claimText: claim.text || '',
+                claimant: claim.claimant || 'Unknown',
+                rating: review.textualRating || '',
+                status,
+                source: review.publisher?.name || 'Fact Checker',
+                sourceUrl: review.url || '',
+                title: review.title || '',
+              });
             }
-            
-            articleFactChecks.push({
-              claimText: claim.text || '',
-              claimant: claim.claimant || 'Unknown',
-              rating: review.textualRating || '',
-              status,
-              source: review.publisher?.name || 'Fact Checker',
-              sourceUrl: review.url || '',
-              title: review.title || '',
-            });
           }
+          
+          // Limit to 3 fact-checks per article
+          perspective.factChecks = perspective.factChecks.slice(0, 3);
+          console.log(`${perspective.perspective} article: ${perspective.factChecks.length} fact-checks found`);
+          
+        } catch (fcError) {
+          console.error(`Fact-check error for ${perspective.perspective}:`, fcError);
         }
-        
-        // Limit to top 5 most relevant
-        articleFactChecks = articleFactChecks.slice(0, 5);
-        console.log(`Found ${articleFactChecks.length} unique article-related fact-checks`);
-        
-      } catch (fcError) {
-        console.error('Fact-check error:', fcError);
-      }
+      }));
     } else if (!factCheckApiKey) {
       console.log('Google Fact Check API key not configured');
+      // Initialize empty factChecks arrays
+      parsedContent.perspectives?.forEach((p: any) => { p.factChecks = []; });
     }
-
-    // Add fact-checks to the response
-    parsedContent.factChecks = articleFactChecks;
 
     console.log('Successfully analyzed topic with real articles');
 

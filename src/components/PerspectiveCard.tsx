@@ -1,4 +1,5 @@
-import { ExternalLink, Clock } from "lucide-react";
+import { ExternalLink, Clock, CheckCircle, XCircle, AlertTriangle } from "lucide-react";
+import type { FactCheck } from "@/lib/api/perspectives";
 
 interface PerspectiveCardProps {
   perspective: "left" | "center" | "right";
@@ -9,6 +10,7 @@ interface PerspectiveCardProps {
   imageUrl?: string;
   timeAgo: string;
   articleUrl: string;
+  factChecks?: FactCheck[];
   animationDelay?: string;
 }
 
@@ -21,6 +23,7 @@ const PerspectiveCard = ({
   imageUrl,
   timeAgo,
   articleUrl,
+  factChecks = [],
   animationDelay = "0s",
 }: PerspectiveCardProps) => {
   const perspectiveStyles = {
@@ -43,9 +46,31 @@ const PerspectiveCard = ({
 
   const styles = perspectiveStyles[perspective];
 
+  const getStatusIcon = (status: string) => {
+    switch (status) {
+      case 'verified':
+        return <CheckCircle className="w-3.5 h-3.5 text-green-600" />;
+      case 'false':
+        return <XCircle className="w-3.5 h-3.5 text-red-600" />;
+      default:
+        return <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />;
+    }
+  };
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'verified':
+        return 'bg-green-50 border-green-200 text-green-800';
+      case 'false':
+        return 'bg-red-50 border-red-200 text-red-800';
+      default:
+        return 'bg-amber-50 border-amber-200 text-amber-800';
+    }
+  };
+
   return (
     <article
-      className={`relative bg-card rounded-lg shadow-card ${styles.border} ${styles.hover} transition-all duration-300 overflow-hidden opacity-0 animate-fade-in`}
+      className={`relative bg-card rounded-lg shadow-card ${styles.border} ${styles.hover} transition-all duration-300 overflow-hidden opacity-0 animate-fade-in flex flex-col`}
       style={{ animationDelay }}
     >
       {imageUrl && (
@@ -58,7 +83,7 @@ const PerspectiveCard = ({
         </div>
       )}
 
-      <div className="p-5">
+      <div className="p-5 flex-1 flex flex-col">
         <div className="flex items-center justify-between mb-3">
           <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${styles.badge}`}>
             {label}
@@ -77,15 +102,43 @@ const PerspectiveCard = ({
           {headline}
         </h3>
 
-        <p className="text-sm text-muted-foreground leading-relaxed mb-4 line-clamp-4">
+        <p className="text-sm text-muted-foreground leading-relaxed mb-4 line-clamp-4 flex-1">
           {summary}
         </p>
+
+        {/* Fact-checks for this article */}
+        {factChecks.length > 0 && (
+          <div className="mb-4 space-y-2">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              Related Fact-Checks
+            </p>
+            {factChecks.map((fc, index) => (
+              <a
+                key={index}
+                href={fc.sourceUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={`block p-2 rounded border text-xs ${getStatusColor(fc.status)} hover:opacity-80 transition-opacity`}
+              >
+                <div className="flex items-start gap-2">
+                  {getStatusIcon(fc.status)}
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium line-clamp-2">{fc.title || fc.claimText}</p>
+                    <p className="text-[10px] opacity-75 mt-0.5">
+                      {fc.source} • {fc.rating}
+                    </p>
+                  </div>
+                </div>
+              </a>
+            ))}
+          </div>
+        )}
 
         <a
           href={articleUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+          className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline mt-auto"
         >
           <span>Read full article</span>
           <ExternalLink className="w-3.5 h-3.5" />

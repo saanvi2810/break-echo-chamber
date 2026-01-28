@@ -1,15 +1,13 @@
 import { TrendingUp, Calendar, Hash } from "lucide-react";
 import PerspectiveCard from "./PerspectiveCard";
-import FactCheckSection from "./FactCheckSection";
-import type { TopicData, Perspective, FactCheck } from "@/lib/api/perspectives";
+import type { TopicData, Perspective } from "@/lib/api/perspectives";
 
 interface TrendingTopicDisplayProps {
   topic: TopicData;
   perspectives: Perspective[];
-  factChecks?: FactCheck[];
 }
 
-const TrendingTopicDisplay = ({ topic, perspectives, factChecks = [] }: TrendingTopicDisplayProps) => {
+const TrendingTopicDisplay = ({ topic, perspectives }: TrendingTopicDisplayProps) => {
   return (
     <div>
       {/* Topic Header */}
@@ -58,11 +56,6 @@ const TrendingTopicDisplay = ({ topic, perspectives, factChecks = [] }: Trending
             animationDelay={`${0.3 + index * 0.1}s`}
           />
         ))}
-      </div>
-
-      {/* Fact-Check Section */}
-      <div className="max-w-6xl mx-auto">
-        <FactCheckSection factChecks={factChecks} />
       </div>
     </div>
   );
