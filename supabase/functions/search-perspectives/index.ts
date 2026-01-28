@@ -63,49 +63,44 @@ function detectBias(outlet: string, url: string): 'left' | 'center' | 'right' {
 }
 
 // Domain lists based on AllSides Media Bias Chart + common news sources
-// LEFT = Left + Lean Left sources
+// PRIORITIZED: Major mainstream outlets FIRST (most likely to have articles on current topics)
+// LEFT = Lean Left + Left sources
 // CENTER = Center sources  
 // RIGHT = Lean Right + Right sources
 const domainsByBias: Record<'left' | 'center' | 'right', string[]> = {
-  // Left + Lean Left (AllSides chart + additional common sources)
+  // Left/Lean Left - MAJOR OUTLETS FIRST
   left: [
-    // Hard Left
-    'alternet.org', 'democracynow.org', 'jacobin.com', 'motherjones.com', 'thenation.com', 'theintercept.com',
-    // Left
-    'thedailybeast.com', 'huffpost.com', 'msnbc.com', 'newyorker.com', 'slate.com', 'vox.com', 'theguardian.com',
-    // Lean Left
-    'abcnews.go.com', 'apnews.com', 'axios.com', 'theatlantic.com', 'bloomberg.com', 'cbsnews.com', 'cnbc.com',
-    'cnn.com', 'insider.com', 'businessinsider.com', 'thehill.com', 'nbcnews.com', 'nbc.com',
-    'nytimes.com', 'npr.org', 'politico.com', 'propublica.org', 'semafor.com',
-    'time.com', 'usatoday.com', 'washingtonpost.com', 'news.yahoo.com',
-    // International left-leaning
-    'france24.com', 'rfi.fr', 'dw.com', 'aljazeera.com',
+    // Major mainstream (highest priority - most likely to have current news)
+    'nytimes.com', 'washingtonpost.com', 'cnn.com', 'nbcnews.com', 'npr.org',
+    'abcnews.go.com', 'cbsnews.com', 'msnbc.com', 'theguardian.com', 'politico.com',
+    // Secondary mainstream
+    'thehill.com', 'axios.com', 'vox.com', 'slate.com', 'theatlantic.com',
+    'huffpost.com', 'thedailybeast.com', 'bloomberg.com', 'time.com', 'usatoday.com',
+    // Other left-leaning
+    'motherjones.com', 'theintercept.com', 'jacobin.com', 'thenation.com', 'democracynow.org',
+    'propublica.org', 'newyorker.com', 'insider.com', 'businessinsider.com',
   ],
-  // Center (AllSides chart + wire services + research)
+  // Center - WIRE SERVICES & MAJOR CENTER OUTLETS FIRST
   center: [
-    '1440.io', 'bbc.com', 'csmonitor.com', 'forbes.com', 'marketwatch.com',
-    'morningbrew.com', 'newsnationnow.com', 'newsweek.com', 'reason.com',
-    'reuters.com', 'tangle.media', 'wsj.com',
-    // Wire services & research
-    'apnews.com', 'afp.com', 'upi.com',
-    // Defense/Policy (typically center/nonpartisan)
-    'defensenews.com', 'defensescoop.com', 'aviationweek.com', 'csis.org', 'brookings.edu',
-    'cfr.org', 'foreignaffairs.com', 'politifact.com', 'factcheck.org', 'snopes.com',
-    // Government sources (center by nature)
-    'state.gov', 'defense.gov', 'whitehouse.gov',
+    // Wire services & major center (highest priority)
+    'reuters.com', 'apnews.com', 'bbc.com', 'wsj.com', 'forbes.com',
+    'newsweek.com', 'usatoday.com', 'thehill.com', 'axios.com',
+    // Other center
+    'csmonitor.com', 'marketwatch.com', 'newsnationnow.com', 'reason.com',
+    'foreignaffairs.com', 'cfr.org', 'brookings.edu', 'csis.org',
+    'politifact.com', 'factcheck.org', 'snopes.com',
   ],
-  // Lean Right + Right (AllSides chart)
+  // Right/Lean Right - MAJOR OUTLETS FIRST
   right: [
-    // Lean Right
-    'dailymail.co.uk', 'thedispatch.com', 'theepochtimes.com', 'foxbusiness.com',
-    'thefp.com', 'justthenews.com', 'nationalreview.com', 'nypost.com',
-    'realclearpolitics.com', 'upward.news', 'washingtonexaminer.com', 'washingtontimes.com', 'zerohedge.com',
-    // Right
-    'theamericanconservative.com', 'spectator.org', 'theblaze.com', 'breitbart.com',
-    'cbn.com', 'dailycaller.com', 'dailywire.com', 'foxnews.com', 'thefederalist.com',
-    'ijr.com', 'newsmax.com', 'oann.com', 'thepostmillennial.com', 'freebeacon.com',
-    // Additional right-leaning
-    'townhall.com', 'redstate.com', 'twitchy.com', 'pjmedia.com', 'hotair.com',
+    // Major mainstream right (highest priority)
+    'foxnews.com', 'nypost.com', 'wsj.com', 'washingtonexaminer.com', 'dailywire.com',
+    'nationalreview.com', 'foxbusiness.com', 'breitbart.com', 'newsmax.com',
+    // Secondary right
+    'dailycaller.com', 'thefederalist.com', 'washingtontimes.com', 'theblaze.com',
+    'dailymail.co.uk', 'nypost.com', 'realclearpolitics.com', 'freebeacon.com',
+    // Other right-leaning
+    'townhall.com', 'redstate.com', 'hotair.com', 'pjmedia.com', 'oann.com',
+    'theepochtimes.com', 'spectator.org', 'theamericanconservative.com',
   ],
 };
 
