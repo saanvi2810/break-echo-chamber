@@ -254,11 +254,17 @@ async function searchNewsByBias(
   // 2) If Perplexity returns 0 citations (common for niche/AI-generated topics), retry with a broader query,
   //    then apply our own allowlist filtering.
 
-  const siteFilters: Record<string, string> = {
-    left: validDomains.left.map((d) => `site:${d}`).join(' OR '),
-    center: validDomains.center.map((d) => `site:${d}`).join(' OR '),
-    right: validDomains.right.map((d) => `site:${d}`).join(' OR '),
+  // We'll constrain sources using chunked `site:` filters in the query text,
+  // because `search_domain_filter` has proven unreliable (validation errors).
+  const MAX_DOMAIN_FILTER = 15;
+  const chunk = <T,>(arr: T[], size: number) => {
+    const out: T[][] = [];
+    for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+    return out;
   };
+
+  const domainChunks = chunk(validDomains[bias], MAX_DOMAIN_FILTER);
+  const siteFilterFor = (domains: string[]) => domains.map((d) => `site:${d}`).join(' OR ');
 
   const desiredCount = 6;
   const minRequired = 1;
@@ -268,11 +274,12 @@ Do NOT use placeholders like "Article from ...".`;
   const strictQuery2 = `Find up to ${desiredCount} additional recent news articles about "${topic}" from the allowed sources.
 Return results with: exact on-page headline/title, outlet, and direct article URL.
 Do NOT use placeholders like "Article from ...".`;
-  const fallbackQuery = `${topic} news (${siteFilters[bias]})`;
+  // Note: fallback uses chunked site: filters to avoid excessively long prompts.
+  const fallbackQueryFor = (domains: string[]) => `${topic} news (${siteFilterFor(domains)})`;
 
   console.log(`Searching ${bias} sources for:`, topic, 'domains:', validDomains[bias].join(', '));
 
-  const runPerplexity = async (opts: { query: string; useDomainFilter: boolean; recency: 'day' | 'week' | 'month' | 'year' }) => {
+  const runPerplexity = async (opts: { query: string; recency: 'day' | 'week' | 'month' | 'year' }) => {
     const r = await fetch('https://api.perplexity.ai/chat/completions', {
       method: 'POST',
       headers: {
@@ -314,7 +321,6 @@ Do NOT use placeholders like "Article from ...".`;
           },
         },
         search_recency_filter: opts.recency,
-        ...(opts.useDomainFilter ? { search_domain_filter: validDomains[bias] } : {}),
         temperature: 0.2,
         max_tokens: 1200,
       }),
@@ -351,42 +357,68 @@ Do NOT use placeholders like "Article from ...".`;
   const dedupeByUrl = (items: PerplexityResult[]) =>
     items.filter((it, idx, arr) => arr.findIndex((x) => x.url === it.url) === idx);
 
-  // Pass 1: strict domain filter (week)
-  let data = await runPerplexity({ query: strictQuery, useDomainFilter: true, recency: 'week' });
-  let structured = extractStructuredResults(data);
+  let structured: PerplexityResult[] = [];
+
+  const strictQueryFor = (domains: string[]) =>
+    `Find up to ${desiredCount} recent news articles about "${topic}" from these sources only: (${siteFilterFor(domains)}).
+Return results with: (1) the exact on-page headline/title, (2) the publisher/outlet name, (3) the direct article URL.
+Do NOT use placeholders like "Article from ...".`;
+
+  const strictQuery2For = (domains: string[]) =>
+    `Find up to ${desiredCount} additional recent news articles about "${topic}" from these sources only: (${siteFilterFor(domains)}).
+Return results with: exact on-page headline/title, outlet, and direct article URL.
+Do NOT use placeholders like "Article from ...".`;
+
+  // Pass 1: strict chunked searches (week).
+  for (const domains of domainChunks.slice(0, 3)) {
+    const data = await runPerplexity({ query: strictQueryFor(domains), recency: 'week' });
+    structured = dedupeByUrl([...structured, ...extractStructuredResults(data)]);
+    if (structured.length >= desiredCount) break;
+  }
 
   // Pass 1b: if too few results, run a second strict query variant.
   if (structured.length > 0 && structured.length < desiredCount) {
-    const data2 = await runPerplexity({ query: strictQuery2, useDomainFilter: true, recency: 'week' });
-    structured = dedupeByUrl([...structured, ...extractStructuredResults(data2)]);
+    for (const domains of domainChunks.slice(0, 3)) {
+      const data2 = await runPerplexity({ query: strictQuery2For(domains), recency: 'week' });
+      structured = dedupeByUrl([...structured, ...extractStructuredResults(data2)]);
+      if (structured.length >= desiredCount) break;
+    }
   }
 
   // Pass 1c: broaden recency while still using domain_filter (month).
   if (structured.length < minRequired) {
-    const dataMonth = await runPerplexity({ query: strictQuery, useDomainFilter: true, recency: 'month' });
-    structured = dedupeByUrl([...structured, ...extractStructuredResults(dataMonth)]);
+    for (const domains of domainChunks.slice(0, 3)) {
+      const dataMonth = await runPerplexity({ query: strictQueryFor(domains), recency: 'month' });
+      structured = dedupeByUrl([...structured, ...extractStructuredResults(dataMonth)]);
+      if (structured.length >= minRequired) break;
+    }
   }
 
   // Pass 2: fallback (month) with explicit site filters in query, then we apply allowlist ourselves.
   if (structured.length < minRequired) {
     console.log(`${bias} strict (domain-filtered) returned <${minRequired}; retrying with fallback query`);
-    const dataFallback = await runPerplexity({ query: fallbackQuery, useDomainFilter: false, recency: 'month' });
-    structured = dedupeByUrl([...structured, ...extractStructuredResults(dataFallback)]);
+    for (const domains of domainChunks.slice(0, 3)) {
+      const dataFallback = await runPerplexity({ query: fallbackQueryFor(domains), recency: 'month' });
+      structured = dedupeByUrl([...structured, ...extractStructuredResults(dataFallback)]);
+      if (structured.length >= minRequired) break;
+    }
   }
 
   // Pass 3: broaden further (year) with site filters.
   if (structured.length < minRequired) {
-    const yearQuery = `${topic} (${siteFilters[bias]})`;
     console.log(`${bias} still <${minRequired}; broadening to year recency`);
-    const dataYear = await runPerplexity({ query: yearQuery, useDomainFilter: false, recency: 'year' });
-    structured = dedupeByUrl([...structured, ...extractStructuredResults(dataYear)]);
+    for (const domains of domainChunks.slice(0, 3)) {
+      const dataYear = await runPerplexity({ query: `${topic} (${siteFilterFor(domains)})`, recency: 'year' });
+      structured = dedupeByUrl([...structured, ...extractStructuredResults(dataYear)]);
+      if (structured.length >= minRequired) break;
+    }
   }
 
   // Pass 4: fully unconstrained query (year), then we filter by our allowlist.
   if (structured.length < minRequired) {
     const openQuery = `${topic} news article`;
     console.log(`${bias} still <${minRequired}; running unconstrained search then filtering to allowlist`);
-    const dataOpen = await runPerplexity({ query: openQuery, useDomainFilter: false, recency: 'year' });
+    const dataOpen = await runPerplexity({ query: openQuery, recency: 'year' });
     structured = dedupeByUrl([...structured, ...extractStructuredResults(dataOpen)]);
   }
 
