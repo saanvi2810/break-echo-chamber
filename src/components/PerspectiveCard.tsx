@@ -1,29 +1,17 @@
 import { ExternalLink, Clock, CheckCircle, XCircle, AlertTriangle } from "lucide-react";
-import type { FactCheck } from "@/lib/api/perspectives";
+import type { Article, FactCheck } from "@/lib/api/perspectives";
 
 interface PerspectiveCardProps {
   perspective: "left" | "center" | "right";
   label: string;
-  outlet: string;
-  headline: string;
-  summary: string;
-  imageUrl?: string;
-  timeAgo: string;
-  articleUrl: string;
-  factChecks?: FactCheck[];
+  articles: Article[];
   animationDelay?: string;
 }
 
 const PerspectiveCard = ({
   perspective,
   label,
-  outlet,
-  headline,
-  summary,
-  imageUrl,
-  timeAgo,
-  articleUrl,
-  factChecks = [],
+  articles,
   animationDelay = "0s",
 }: PerspectiveCardProps) => {
   const perspectiveStyles = {
@@ -49,11 +37,11 @@ const PerspectiveCard = ({
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'verified':
-        return <CheckCircle className="w-3.5 h-3.5 text-green-600" />;
+        return <CheckCircle className="w-3 h-3 text-green-600" />;
       case 'false':
-        return <XCircle className="w-3.5 h-3.5 text-red-600" />;
+        return <XCircle className="w-3 h-3 text-red-600" />;
       default:
-        return <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />;
+        return <AlertTriangle className="w-3 h-3 text-amber-600" />;
     }
   };
 
@@ -69,82 +57,84 @@ const PerspectiveCard = ({
   };
 
   return (
-    <article
-      className={`relative bg-card rounded-lg shadow-card ${styles.border} ${styles.hover} transition-all duration-300 overflow-hidden opacity-0 animate-fade-in flex flex-col`}
+    <div
+      className={`bg-card rounded-lg shadow-card ${styles.border} ${styles.hover} transition-all duration-300 overflow-hidden opacity-0 animate-fade-in`}
       style={{ animationDelay }}
     >
-      {imageUrl && (
-        <div className="aspect-video overflow-hidden">
-          <img
-            src={imageUrl}
-            alt={headline}
-            className="w-full h-full object-cover transition-transform duration-300 hover:scale-105"
-          />
-        </div>
-      )}
-
-      <div className="p-5 flex-1 flex flex-col">
-        <div className="flex items-center justify-between mb-3">
-          <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${styles.badge}`}>
-            {label}
-          </span>
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <Clock className="w-3 h-3" />
-            <span>{timeAgo}</span>
-          </div>
-        </div>
-
-        <p className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wider">
-          {outlet}
+      {/* Perspective Header */}
+      <div className="p-4 border-b border-border">
+        <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${styles.badge}`}>
+          {label}
+        </span>
+        <p className="text-xs text-muted-foreground mt-2">
+          {articles.length} article{articles.length !== 1 ? 's' : ''} found
         </p>
+      </div>
 
-        <h3 className="font-serif text-lg font-semibold leading-tight mb-3 line-clamp-3">
-          {headline}
-        </h3>
+      {/* Articles List */}
+      <div className="divide-y divide-border">
+        {articles.map((article, index) => (
+          <article key={index} className="p-4">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                {article.outlet}
+              </p>
+              <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                <Clock className="w-3 h-3" />
+                <span>{article.timeAgo}</span>
+              </div>
+            </div>
 
-        <p className="text-sm text-muted-foreground leading-relaxed mb-4 line-clamp-4 flex-1">
-          {summary}
-        </p>
+            <h3 className="font-serif text-base font-semibold leading-tight mb-2 line-clamp-2">
+              {article.headline}
+            </h3>
 
-        {/* Fact-checks for this article */}
-        {factChecks.length > 0 && (
-          <div className="mb-4 space-y-2">
-            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-              Related Fact-Checks
+            <p className="text-sm text-muted-foreground leading-relaxed mb-3 line-clamp-2">
+              {article.summary}
             </p>
-            {factChecks.map((fc, index) => (
-              <a
-                key={index}
-                href={fc.sourceUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className={`block p-2 rounded border text-xs ${getStatusColor(fc.status)} hover:opacity-80 transition-opacity`}
-              >
-                <div className="flex items-start gap-2">
-                  {getStatusIcon(fc.status)}
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium line-clamp-2">{fc.title || fc.claimText}</p>
-                    <p className="text-[10px] opacity-75 mt-0.5">
-                      {fc.source} • {fc.rating}
-                    </p>
-                  </div>
-                </div>
-              </a>
-            ))}
+
+            {/* Fact-checks for this article */}
+            {article.factChecks && article.factChecks.length > 0 && (
+              <div className="mb-3 space-y-1.5">
+                {article.factChecks.map((fc, fcIndex) => (
+                  <a
+                    key={fcIndex}
+                    href={fc.sourceUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={`block p-2 rounded border text-xs ${getStatusColor(fc.status)} hover:opacity-80 transition-opacity`}
+                  >
+                    <div className="flex items-start gap-1.5">
+                      {getStatusIcon(fc.status)}
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium line-clamp-1">{fc.title || fc.claimText}</p>
+                        <p className="text-[10px] opacity-75">{fc.source}</p>
+                      </div>
+                    </div>
+                  </a>
+                ))}
+              </div>
+            )}
+
+            <a
+              href={article.articleUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+            >
+              <span>Read article</span>
+              <ExternalLink className="w-3 h-3" />
+            </a>
+          </article>
+        ))}
+
+        {articles.length === 0 && (
+          <div className="p-4 text-center text-sm text-muted-foreground">
+            No articles found from this perspective
           </div>
         )}
-
-        <a
-          href={articleUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline mt-auto"
-        >
-          <span>Read full article</span>
-          <ExternalLink className="w-3.5 h-3.5" />
-        </a>
       </div>
-    </article>
+    </div>
   );
 };
 

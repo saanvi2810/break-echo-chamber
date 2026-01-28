@@ -11,15 +11,19 @@ export interface FactCheck {
   title: string;
 }
 
-export interface Perspective {
-  perspective: 'left' | 'center' | 'right';
-  label: string;
+export interface Article {
   outlet: string;
   headline: string;
   summary: string;
   timeAgo: string;
   articleUrl: string;
   factChecks?: FactCheck[];
+}
+
+export interface Perspective {
+  perspective: 'left' | 'center' | 'right';
+  label: string;
+  articles: Article[];
 }
 
 export interface TopicData {
