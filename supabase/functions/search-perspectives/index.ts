@@ -106,12 +106,7 @@ async function searchNewsByBias(
   // Use top 10 domains for explicit site: query (more reliable than search_domain_filter)
   const topDomains = allDomains.slice(0, 10);
   
-  // Build explicit site filter query - this is more reliable than the API parameter
-  const siteFilter = topDomains.map(d => `site:${d}`).join(' OR ');
-  const searchQuery = `${topic} (${siteFilter})`;
-  
   console.log(`Searching ${bias} sources for: ${topic}`);
-  console.log(`Query: ${searchQuery.slice(0, 200)}...`);
 
   // Ask Perplexity to find and summarize actual articles
   const response = await fetch('https://api.perplexity.ai/chat/completions', {
@@ -125,15 +120,23 @@ async function searchNewsByBias(
       messages: [
         {
           role: 'user',
-          content: `Find recent news articles about "${topic}" from these specific sources: ${topDomains.join(', ')}.
+          content: `You are doing a web search.
 
-For each article found, provide:
-1. The exact headline
-2. The source/outlet name  
-3. The article URL
-4. A 2-3 sentence factual summary of what the article actually reports
+TOPIC: "${topic}"
+ALLOWED DOMAINS (ONLY use these): ${topDomains.join(', ')}
 
-Only include articles from the sources listed above. Focus on factual reporting, not interpretation.`
+Find up to 5 recent news articles about the topic from ONLY the allowed domains.
+
+Return each result with this exact format:
+- Headline: <headline>
+  Source: <outlet>
+  URL: <https://...>
+  Summary: <2-3 sentence factual summary of what the article reports>
+
+Rules:
+- Every result MUST include a real URL starting with https://
+- Do NOT include author bio pages, tag pages, category hubs, or homepages.
+- If you can't find any valid articles from the allowed domains, output exactly: NO_RESULTS`
         }
       ],
       search_recency_filter: 'month', // Broader time range for better results
@@ -147,120 +150,77 @@ Only include articles from the sources listed above. Focus on factual reporting,
   }
 
   const data = await response.json();
-  const citations: string[] = data.citations || [];
   const content = data.choices?.[0]?.message?.content || '';
-  
-  console.log(`${bias} search found ${citations.length} citations`);
+
   console.log(`${bias} content preview:`, content.slice(0, 500));
 
-  const articles: NewsArticle[] = [];
+  if (content.trim().toUpperCase().includes('NO_RESULTS')) {
+    console.log(`${bias} search: NO_RESULTS`);
+    return [];
+  }
 
-  // Strategy 1: Use citations if available
-  if (citations.length > 0) {
-    for (const url of citations) {
-      if (!url || typeof url !== 'string' || !url.startsWith('http')) continue;
-      
-      try {
-        const hostname = new URL(url).hostname.toLowerCase().replace('www.', '');
-        // Check if URL is from our allowed domains
-        const isValid = allDomains.some(d => hostname.includes(d.replace('www.', '')));
-        if (!isValid) continue;
-        
-        const outlet = detectOutletFromUrl(url);
-        const urlDomain = hostname.split('.')[0];
-        
-        // Try to extract info about this article from content
-        let title = `Article from ${outlet}`;
-        let snippet = '';
-        
-        // Look for headline patterns
-        const headlinePatterns = [
-          new RegExp(`\\*\\*(?:Headline:?)?\\s*\\*\\*\\s*([^\\n*]+)`, 'gim'),
-          new RegExp(`(?:^|\\n)\\d+\\.\\s*\\*?\\*?(?:Headline:?)?\\s*\\*?\\*?\\s*([^\\n]+)`, 'gim'),
-        ];
-        
-        for (const pattern of headlinePatterns) {
-          const matches = [...content.matchAll(pattern)];
-          for (const match of matches) {
-            if (match[1] && match[1].length > 15 && match[1].length < 200) {
-              title = match[1].replace(/\*+/g, '').trim();
-              break;
-            }
-          }
-        }
-        
-        // Look for summary patterns
-        const summaryPatterns = [
-          new RegExp(`\\*\\*Summary:?\\*\\*\\s*([^\\n]+(?:\\n[^\\n*]+)*)`, 'gim'),
-          new RegExp(`(?:${urlDomain}|${outlet})[^.]*?[\\.:]\\s*([^\\n]{50,300})`, 'i'),
-        ];
-        
-        for (const pattern of summaryPatterns) {
-          const match = content.match(pattern);
-          if (match && match[1]) {
-            snippet = match[1].trim().slice(0, 400);
-            break;
-          }
-        }
-        
-        articles.push({
-          url,
-          title,
-          outlet,
-          snippet: snippet || '',
-          bias,
-        });
-      } catch {
-        continue;
-      }
-    }
+  // Extract real URLs from the model output (required)
+  const urlRegex = /https:\/\/[\w\-._~:/?#\[\]@!$&'()*+,;=%]+/g;
+  const urlsInText = Array.from(content.matchAll(urlRegex) as IterableIterator<RegExpMatchArray>)
+    .map((m: RegExpMatchArray) => m[0]);
+
+  const uniqueUrls: string[] = [];
+  for (const u of urlsInText) {
+    if (typeof u === 'string' && u.startsWith('https://') && !uniqueUrls.includes(u)) uniqueUrls.push(u);
   }
-  
-  // Strategy 2: Parse articles directly from content if no valid citations
-  if (articles.length === 0 && content.length > 100) {
-    console.log(`${bias}: No citations, parsing content directly`);
-    
-    // Parse structured article blocks from the content
-    const articleBlocks = content.split(/(?=\*\*\d+\.|(?:^|\n)\d+\.)/);
-    
-    for (const block of articleBlocks) {
-      if (block.length < 50) continue;
-      
-      // Extract headline
-      const headlineMatch = block.match(/\*\*(?:Headline:?\s*)?\*\*\s*([^\n*]+)/i) 
-        || block.match(/\d+\.\s*\*?\*?(?:Headline:?\s*)?\*?\*?\s*([^\n]+)/i);
-      
-      // Extract source
-      const sourceMatch = block.match(/\*\*Source:?\*\*\s*([^\n*]+)/i)
-        || block.match(/Source:?\s*([A-Za-z][A-Za-z\s]+?)(?:\n|$)/i);
-      
-      // Extract URL
-      const urlMatch = block.match(/\*\*(?:URL|Article URL|Link):?\*\*\s*(https?:\/\/[^\s\n]+)/i)
-        || block.match(/(https?:\/\/[^\s\n\[\]]+)/);
-      
-      // Extract summary
-      const summaryMatch = block.match(/\*\*Summary:?\*\*\s*([^\n]+(?:\n(?!\*\*)[^\n]+)*)/i)
-        || block.match(/(?:Summary|reports?|says?)[:\s]+([^*\n]{50,400})/i);
-      
-      if (headlineMatch || sourceMatch) {
-        const title = headlineMatch?.[1]?.replace(/\*+/g, '').trim() || 'Article';
-        const outlet = sourceMatch?.[1]?.replace(/\*+/g, '').trim() || 'News Source';
-        const url = urlMatch?.[1]?.trim() || '';
-        const snippet = summaryMatch?.[1]?.replace(/\*+/g, '').trim() || '';
-        
-        // Only add if we have enough info
-        if (title.length > 10 && (url || outlet !== 'News Source')) {
-          articles.push({
-            url: url || `#${bias}-${articles.length}`,
-            title,
-            outlet,
-            snippet,
-            bias,
-          });
-        }
-      }
+
+  const isAllowedUrl = (url: string) => {
+    try {
+      const hostname = new URL(url).hostname.toLowerCase().replace('www.', '');
+      return topDomains.some((d) => hostname === d.replace('www.', '') || hostname.endsWith('.' + d.replace('www.', '')));
+    } catch {
+      return false;
     }
-  }
+  };
+
+  const isNonArticlePath = (url: string) => {
+    try {
+      const u = new URL(url);
+      const path = u.pathname.toLowerCase();
+      return (
+        path === '/' ||
+        path.startsWith('/people') ||
+        path.startsWith('/author') ||
+        path.includes('/tag/') ||
+        path.includes('/tags/') ||
+        path.includes('/topic/') ||
+        path.includes('/topics/') ||
+        path.includes('/category/') ||
+        path.includes('/categories/') ||
+        path.includes('/section/')
+      );
+    } catch {
+      return true;
+    }
+  };
+
+  const validUrls = uniqueUrls.filter((u) => isAllowedUrl(u) && !isNonArticlePath(u));
+
+  const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  const articles: NewsArticle[] = validUrls.slice(0, 8).map((url) => {
+    const outlet = detectOutletFromUrl(url);
+
+    const titleMatch = content.match(
+      new RegExp(`Headline:\\s*(.+)\\n\\s*Source:[^\\n]*\\n\\s*URL:\\s*${escapeRegExp(url)}`, 'i')
+    );
+    const summaryMatch = content.match(
+      new RegExp(`URL:\\s*${escapeRegExp(url)}[\\s\\S]*?Summary:\\s*([^\n]+(?:\\n(?!- Headline:)[^\n]+)*)`, 'i')
+    );
+
+    return {
+      url,
+      title: titleMatch?.[1]?.trim() || `Article from ${outlet}`,
+      outlet,
+      snippet: (summaryMatch?.[1]?.trim() || '').slice(0, 500),
+      bias,
+    };
+  });
 
   console.log(`${bias} search: ${articles.length} articles extracted`);
   return articles;
@@ -269,12 +229,10 @@ Only include articles from the sources listed above. Focus on factual reporting,
 async function searchNews(topic: string, perplexityKey: string): Promise<NewsArticle[]> {
   console.log('Searching news with Perplexity for diverse sources:', topic);
 
-  // Search each bias category in parallel to ensure diverse sources
-  const [leftArticles, centerArticles, rightArticles] = await Promise.all([
-    searchNewsByBias(topic, perplexityKey, 'left'),
-    searchNewsByBias(topic, perplexityKey, 'center'),
-    searchNewsByBias(topic, perplexityKey, 'right'),
-  ]);
+  // Search each bias category sequentially (turns) for more predictable behavior
+  const leftArticles = await searchNewsByBias(topic, perplexityKey, 'left');
+  const centerArticles = await searchNewsByBias(topic, perplexityKey, 'center');
+  const rightArticles = await searchNewsByBias(topic, perplexityKey, 'right');
 
   const allArticles = [...leftArticles, ...centerArticles, ...rightArticles];
   console.log(`Total articles found: ${allArticles.length} (left: ${leftArticles.length}, center: ${centerArticles.length}, right: ${rightArticles.length})`);
@@ -284,7 +242,8 @@ async function searchNews(topic: string, perplexityKey: string): Promise<NewsArt
 
 function pickByBias(articles: NewsArticle[], bias: 'left' | 'center' | 'right'): NewsArticle | undefined {
   const candidates = articles.filter((a) => a.bias === bias);
-  return candidates[0] || articles[0];
+  // Never fall back to a different bias; that causes mixing.
+  return candidates[0];
 }
 
 // Known fact-checking domains - URLs from these should be preserved
@@ -314,12 +273,24 @@ function enforceRealArticleUrls(parsedContent: any, realArticles: NewsArticle[])
     if (p?.perspective === 'left') return left;
     if (p?.perspective === 'center') return center;
     if (p?.perspective === 'right') return right;
-    return realArticles[0];
+    return undefined;
   };
 
   parsedContent.perspectives.forEach((p: any) => {
     const chosen = fallbackFor(p);
-    if (!chosen) return;
+    if (!chosen) {
+      const label = p?.perspective === 'left'
+        ? 'No left-leaning articles found'
+        : p?.perspective === 'center'
+          ? 'No center articles found'
+          : 'No right-leaning articles found';
+
+      p.outlet = label;
+      p.headline = label;
+      p.summary = label;
+      p.articleUrl = '';
+      return;
+    }
 
     // Enforce articleUrl only
     if (!p.articleUrl || typeof p.articleUrl !== 'string' || !allowedUrls.has(p.articleUrl)) {
