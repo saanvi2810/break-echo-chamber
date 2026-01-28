@@ -54,7 +54,7 @@ const TopicSearch = ({
 
   const getLoadingText = () => {
     if (retryAttempt > 0) {
-      return `Retrying... (attempt ${retryAttempt + 1})`;
+      return `Retrying... (attempt ${retryAttempt})`;
     }
     return "Analyzing...";
   };

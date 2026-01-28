@@ -369,70 +369,46 @@ Deno.serve(async (req) => {
       day: 'numeric' 
     });
 
-    // Build detailed article context with actual content from Perplexity
-    const articleContext = realArticles.length > 0
-      ? `\n\nREAL ARTICLES WITH CONTENT (use these exact URLs and summaries):\n${realArticles
-          .slice(0, 12)
-          .map((a) => `- [${(a.bias || 'center').toUpperCase()}] ${a.outlet}
-  Title: ${a.title}
-  URL: ${a.url}
-  Content: ${a.snippet || 'No summary available'}`)
-          .join('\n\n')}`
-      : '';
+    // BYPASS AI: Use only Perplexity's raw output for article info
+    // Build perspectives directly from realArticles (no AI interpretation/summaries)
+    const leftArticle = pickByBias(realArticles, 'left');
+    const centerArticle = pickByBias(realArticles, 'center');
+    const rightArticle = pickByBias(realArticles, 'right');
 
-    const systemPrompt = `You are a news analyst that organizes real articles by political perspective.
-Your job is to SELECT and PRESENT real articles - NOT to interpret, spin, or editorialize them.
+    const perspectives = [
+      {
+        perspective: 'left',
+        label: 'Left-Leaning Source',
+        outlet: leftArticle?.outlet || 'No left-leaning sources found',
+        headline: leftArticle?.title || 'No article found',
+        summary: leftArticle?.snippet || 'No summary available from this outlet for this topic.',
+        timeAgo: 'Recently',
+        articleUrl: leftArticle?.url || '',
+        factChecks: [],
+      },
+      {
+        perspective: 'center',
+        label: 'Center Source',
+        outlet: centerArticle?.outlet || 'No center sources found',
+        headline: centerArticle?.title || 'No article found',
+        summary: centerArticle?.snippet || 'No summary available from this outlet for this topic.',
+        timeAgo: 'Recently',
+        articleUrl: centerArticle?.url || '',
+        factChecks: [],
+      },
+      {
+        perspective: 'right',
+        label: 'Right-Leaning Source',
+        outlet: rightArticle?.outlet || 'No right-leaning sources found',
+        headline: rightArticle?.title || 'No article found',
+        summary: rightArticle?.snippet || 'No summary available from this outlet for this topic.',
+        timeAgo: 'Recently',
+        articleUrl: rightArticle?.url || '',
+        factChecks: [],
+      },
+    ];
 
-TODAY'S DATE IS: ${currentDate}
-${articleContext}
-
-IMPORTANT RULES:
-1. You must respond with valid JSON only. No markdown, no code blocks.
-2. ONLY use URLs from the REAL ARTICLES list above.
-3. The "summary" field must be a FACTUAL summary of what the article ACTUALLY SAYS based on the Content provided above.
-4. DO NOT add political interpretation, framing, or spin to the summaries.
-5. DO NOT speculate about what "progressives think" or "conservatives believe" - just report what the article says.
-6. If the Content field says something specific, use that. Don't make up what the article might say.
-
-The JSON must follow this exact structure:
-{
-  "topic": {
-    "title": "Brief topic title",
-    "description": "One sentence factual description",
-    "date": "${currentDate}",
-    "tags": ["Tag1", "Tag2", "Tag3"]
-  },
-  "perspectives": [
-    {
-      "perspective": "left",
-      "label": "Left-Leaning Source",
-      "outlet": "Exact outlet name from article",
-      "headline": "Exact headline from article",
-      "summary": "Factual 2-3 sentence summary of what this specific article reports",
-      "timeAgo": "Recently",
-      "articleUrl": "Exact URL from article"
-    },
-    {
-      "perspective": "center",
-      "label": "Center Source",
-      "outlet": "Exact outlet name from article",
-      "headline": "Exact headline from article",
-      "summary": "Factual 2-3 sentence summary of what this specific article reports",
-      "timeAgo": "Recently",
-      "articleUrl": "Exact URL from article"
-    },
-    {
-      "perspective": "right",
-      "label": "Right-Leaning Source", 
-      "outlet": "Exact outlet name from article",
-      "headline": "Exact headline from article",
-      "summary": "Factual 2-3 sentence summary of what this specific article reports",
-      "timeAgo": "Recently",
-      "articleUrl": "Exact URL from article"
-    }
-  ]
-}`;
-
+    // Use AI just for topic metadata (title/description/tags)
     const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -442,51 +418,56 @@ The JSON must follow this exact structure:
       body: JSON.stringify({
         model: 'google/gemini-2.5-flash',
         messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: `Organize coverage of "${topic}" by selecting one article from each political lean (left, center, right) from the provided list. Use the actual content provided to write factual summaries - do not interpret or add spin.` }
+          {
+            role: 'system',
+            content: 'Return ONLY valid JSON with no markdown. Provide a short title, one-sentence description, and 3 tags for the given topic. Example: {"title":"...","description":"...","tags":["...","...","..."]}'
+          },
+          { role: 'user', content: `Generate a short title, one-sentence description, and 3 tags for this topic: "${topic}"` }
         ],
-        temperature: 0.3, // Lower temperature for more factual output
+        temperature: 0.2,
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'topic_metadata',
+            schema: {
+              type: 'object',
+              properties: {
+                title: { type: 'string' },
+                description: { type: 'string' },
+                tags: { type: 'array', items: { type: 'string' }, minItems: 3, maxItems: 3 }
+              },
+              required: ['title', 'description', 'tags']
+            }
+          }
+        }
       }),
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('AI Gateway error:', errorText);
-      return new Response(
-        JSON.stringify({ error: 'Failed to analyze topic' }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
+    let topicMetadata = {
+      title: topic,
+      description: `Coverage of ${topic}`,
+      tags: ['News', 'Politics', 'Current Events']
+    };
 
-    const aiResponse = await response.json();
-    const content = aiResponse.choices?.[0]?.message?.content;
-
-    if (!content) {
-      return new Response(
-        JSON.stringify({ error: 'No response from AI' }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    // Parse the JSON response
-    let parsedContent;
-    try {
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        parsedContent = JSON.parse(jsonMatch[0]);
-      } else {
-        parsedContent = JSON.parse(content);
+    if (response.ok) {
+      const aiResponse = await response.json();
+      const content = aiResponse.choices?.[0]?.message?.content;
+      if (content) {
+        try {
+          topicMetadata = JSON.parse(content);
+        } catch (e) {
+          console.error('Failed to parse topic metadata:', e);
+        }
       }
-    } catch (parseError) {
-      console.error('Failed to parse AI response:', content);
-      return new Response(
-        JSON.stringify({ error: 'Failed to parse response' }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
     }
 
-    // Enforce real URLs (prevents hallucinated/fake links)
-    enforceRealArticleUrls(parsedContent, realArticles);
+    const parsedContent = {
+      topic: {
+        ...topicMetadata,
+        date: currentDate
+      },
+      perspectives
+    };
 
     // Search for fact-checks for EACH article's specific content
     // Uses Google Fact Check API to find real fact-checks from Snopes, PolitiFact, etc.
