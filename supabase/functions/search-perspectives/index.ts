@@ -317,57 +317,94 @@ async function searchWithPerplexity(
   bias: 'left' | 'center' | 'right',
   perplexityKey: string
 ): Promise<NewsArticle[]> {
-  const domains = domainsByBias[bias].slice(0, 5);
-  
-  console.log(`[${bias}] Perplexity fallback search`);
-  
-  const response = await fetch('https://api.perplexity.ai/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${perplexityKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'sonar',
-      messages: [
-        {
-          role: 'user',
-          content: `Find recent news articles about "${topic}" from major news outlets.`
+  const domains = domainsByBias[bias];
+  const chunk = <T,>(arr: T[], size: number) =>
+    Array.from({ length: Math.ceil(arr.length / size) }, (_, i) => arr.slice(i * size, i * size + size));
+
+  const topicClean = String(topic).replace(/["“”]/g, '').trim();
+  const topicShort = topicClean.split(/\s+/).slice(0, 6).join(' ');
+
+  console.log(`[${bias}] Perplexity fallback search (site: query)`);
+
+  const run = async (recency: 'week' | 'month') => {
+    const domainChunks = chunk(domains, 8);
+
+    for (const dc of domainChunks) {
+      const siteFilters = dc.map(d => `site:${d}`).join(' OR ');
+      const q1 = `${topicClean} (${siteFilters})`;
+      const q2 = topicShort && topicShort !== topicClean ? `${topicShort} (${siteFilters})` : '';
+
+      const tryQuery = async (query: string) => {
+        if (!query) return { citations: [] as string[], content: '' };
+
+        const response = await fetch('https://api.perplexity.ai/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${perplexityKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'sonar',
+            messages: [
+              {
+                role: 'user',
+                content: `Return ONLY real article links (citations) for: ${query}. Do not include homepages or topic pages.`
+              }
+            ],
+            search_recency_filter: recency,
+            temperature: 0.1,
+          }),
+        });
+
+        if (!response.ok) {
+          const err = await response.text();
+          console.error(`[${bias}] Perplexity error (${recency}): ${err.slice(0, 200)}`);
+          return { citations: [] as string[], content: '' };
         }
-      ],
-      search_recency_filter: 'week',
-      search_domain_filter: domains,
-    }),
-  });
 
-  if (!response.ok) {
-    console.error(`[${bias}] Perplexity error`);
-    return [];
-  }
+        const data = await response.json();
+        return {
+          citations: (data.citations || []) as string[],
+          content: data.choices?.[0]?.message?.content || '',
+        };
+      };
 
-  const data = await response.json();
-  const citations: string[] = data.citations || [];
-  const content = data.choices?.[0]?.message?.content || '';
+      console.log(`[${bias}] Perplexity query (${recency}): ${q1.slice(0, 120)}...`);
+      let { citations, content } = await tryQuery(q1);
+      if (citations.length === 0 && q2) {
+        console.log(`[${bias}] Perplexity query (${recency}, short): ${q2.slice(0, 120)}...`);
+        ({ citations, content } = await tryQuery(q2));
+      }
 
-  console.log(`[${bias}] Perplexity citations: ${citations.length}`);
-  
-  const articles: NewsArticle[] = [];
-  
-  for (const url of citations) {
-    if (!url || !url.startsWith('http')) continue;
-    if (!isArticlePath(url)) continue;
-    
-    const outlet = detectOutletFromUrl(url);
-    articles.push({
-      url,
-      title: `Article from ${outlet}`,
-      outlet,
-      snippet: content.slice(0, 200) + '...',
-      bias,
-    });
-  }
-  
-  return articles;
+      if (citations.length > 0) {
+        console.log(`[${bias}] Perplexity citations: ${citations.length}`);
+        const articles: NewsArticle[] = [];
+        for (const url of citations) {
+          if (!url || !url.startsWith('http')) continue;
+          if (!isArticlePath(url)) continue;
+          const outlet = detectOutletFromUrl(url);
+          articles.push({
+            url,
+            title: `Article from ${outlet}`,
+            outlet,
+            snippet: (content || '').slice(0, 220) + '...',
+            bias,
+          });
+        }
+        if (articles.length > 0) return articles;
+      }
+    }
+
+    return [] as NewsArticle[];
+  };
+
+  // Pass 1: week
+  let results = await run('week');
+  // Pass 2: month
+  if (results.length === 0) results = await run('month');
+
+  console.log(`[${bias}] Perplexity citations: ${results.length}`);
+  return results;
 }
 
 // Search all biases in parallel
