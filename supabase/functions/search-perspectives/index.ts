@@ -108,6 +108,7 @@ async function searchNewsByBias(
   
   console.log(`Searching ${bias} sources for: ${topic} domains: ${domains.join(', ')}`);
 
+  // Ask Perplexity to summarize actual article content, not just find URLs
   const response = await fetch('https://api.perplexity.ai/chat/completions', {
     method: 'POST',
     headers: {
@@ -119,7 +120,12 @@ async function searchNewsByBias(
       messages: [
         {
           role: 'user',
-          content: `Find the most recent news articles about "${topic}". Return headlines and URLs from news sources.`
+          content: `Find recent news articles about "${topic}" and provide a factual summary of what each article actually says. For each article found, provide:
+1. The exact headline
+2. The source/outlet name
+3. A 2-3 sentence factual summary of the article's actual content and key points (not interpretation or spin)
+
+Focus on what the articles actually report, not political framing.`
         }
       ],
       search_recency_filter: 'week',
@@ -138,6 +144,7 @@ async function searchNewsByBias(
   const content = data.choices?.[0]?.message?.content || '';
   
   console.log(`${bias} search found ${citations.length} citations`);
+  console.log(`${bias} content preview:`, content.slice(0, 500));
 
   // Accept URLs from ALL domains in our full list (not just the 20 used in filter)
   const validDomainsSet = new Set(allDomains.map(d => d.toLowerCase()));
@@ -152,16 +159,57 @@ async function searchNewsByBias(
         return false;
       }
     })
-    .map((url: string) => {
+    .map((url: string, index: number) => {
       const outlet = detectOutletFromUrl(url);
-      const urlDomain = new URL(url).hostname.replace('www.', '');
-      const titleMatch = content.match(new RegExp(`["']([^"']{10,100})["'][^"']*${urlDomain.split('.')[0]}`, 'i'));
+      
+      // Try to extract title and summary from Perplexity's response
+      // The content contains actual article summaries
+      let title = `Article from ${outlet}`;
+      let snippet = '';
+      
+      // Look for the outlet name or URL domain in the content to find relevant summary
+      const urlDomain = new URL(url).hostname.replace('www.', '').split('.')[0];
+      const outletLower = outlet.toLowerCase();
+      
+      // Try to find a section about this source in the content
+      const contentLower = content.toLowerCase();
+      const patterns = [
+        new RegExp(`${outletLower}[^.]*reports?[^.]+\\.`, 'i'),
+        new RegExp(`${outletLower}[^.]*states?[^.]+\\.`, 'i'),
+        new RegExp(`${outletLower}[^.]*says?[^.]+\\.`, 'i'),
+        new RegExp(`according to ${outletLower}[^.]+\\.`, 'i'),
+        new RegExp(`${urlDomain}[^.]*:\\s*[^.]+\\.`, 'i'),
+      ];
+      
+      for (const pattern of patterns) {
+        const match = content.match(pattern);
+        if (match) {
+          snippet = match[0].trim();
+          break;
+        }
+      }
+      
+      // If no specific match, try to extract from numbered list format
+      if (!snippet) {
+        const numberedPattern = new RegExp(`\\d+\\.\\s*\\*?\\*?([^*\\n]+)\\*?\\*?[^\\n]*${urlDomain}[^\\n]*`, 'i');
+        const numMatch = content.match(numberedPattern);
+        if (numMatch) {
+          title = numMatch[1]?.trim() || title;
+        }
+      }
+      
+      // Extract headline if mentioned with quotes
+      const headlinePattern = new RegExp(`[""]([^""]{15,150})[""][^""]*(?:${outletLower}|${urlDomain})`, 'i');
+      const headlineMatch = content.match(headlinePattern);
+      if (headlineMatch) {
+        title = headlineMatch[1].trim();
+      }
       
       return {
         url,
-        title: titleMatch?.[1] || `Article from ${outlet}`,
+        title,
         outlet,
-        snippet: '',
+        snippet: snippet || content.slice(0, 300), // Fall back to general content
         bias: bias,
       };
     });
@@ -288,58 +336,66 @@ Deno.serve(async (req) => {
       day: 'numeric' 
     });
 
-    // Build strict URL list for the AI (we'll also enforce after parsing)
+    // Build detailed article context with actual content from Perplexity
     const articleContext = realArticles.length > 0
-      ? `\n\nREAL ARTICLES (ONLY use these exact URLs):\n${realArticles
+      ? `\n\nREAL ARTICLES WITH CONTENT (use these exact URLs and summaries):\n${realArticles
           .slice(0, 12)
-          .map((a) => `- [${(a.bias || 'center').toUpperCase()}] ${a.outlet}: ${a.title} :: ${a.url}`)
-          .join('\n')}`
+          .map((a) => `- [${(a.bias || 'center').toUpperCase()}] ${a.outlet}
+  Title: ${a.title}
+  URL: ${a.url}
+  Content: ${a.snippet || 'No summary available'}`)
+          .join('\n\n')}`
       : '';
 
-    const systemPrompt = `You are a news analyst that provides balanced, multi-perspective coverage of current events. 
-For any topic, you must provide exactly 3 perspectives: progressive/left-leaning, centrist/balanced, and conservative/right-leaning.
+    const systemPrompt = `You are a news analyst that organizes real articles by political perspective.
+Your job is to SELECT and PRESENT real articles - NOT to interpret, spin, or editorialize them.
 
 TODAY'S DATE IS: ${currentDate}
 ${articleContext}
 
-IMPORTANT: You must respond with valid JSON only. No markdown, no code blocks, just raw JSON.
-${realArticles.length > 0 ? 'CRITICAL: You MUST choose articleUrl ONLY from the REAL ARTICLES list above. Never invent URLs.' : ''}
+IMPORTANT RULES:
+1. You must respond with valid JSON only. No markdown, no code blocks.
+2. ONLY use URLs from the REAL ARTICLES list above.
+3. The "summary" field must be a FACTUAL summary of what the article ACTUALLY SAYS based on the Content provided above.
+4. DO NOT add political interpretation, framing, or spin to the summaries.
+5. DO NOT speculate about what "progressives think" or "conservatives believe" - just report what the article says.
+6. If the Content field says something specific, use that. Don't make up what the article might say.
 
 The JSON must follow this exact structure:
 {
   "topic": {
     "title": "Brief topic title",
-    "description": "One sentence description of the topic",
+    "description": "One sentence factual description",
     "date": "${currentDate}",
     "tags": ["Tag1", "Tag2", "Tag3"]
   },
   "perspectives": [
     {
       "perspective": "left",
-      "label": "Progressive View",
-      "outlet": "Name of the actual outlet",
-      "headline": "The actual headline from the article",
-      "summary": "2-3 sentence summary based on the actual article content",
+      "label": "Left-Leaning Source",
+      "outlet": "Exact outlet name from article",
+      "headline": "Exact headline from article",
+      "summary": "Factual 2-3 sentence summary of what this specific article reports",
       "timeAgo": "Recently",
-      "articleUrl": "The real URL from the articles above"
+      "articleUrl": "Exact URL from article"
     },
     {
       "perspective": "center",
-      "label": "Balanced Analysis",
-      "outlet": "Name of the actual outlet",
-      "headline": "The actual headline from the article",
-      "summary": "2-3 sentence summary based on the actual article content",
+      "label": "Center Source",
+      "outlet": "Exact outlet name from article",
+      "headline": "Exact headline from article",
+      "summary": "Factual 2-3 sentence summary of what this specific article reports",
       "timeAgo": "Recently",
-      "articleUrl": "The real URL from the articles above"
+      "articleUrl": "Exact URL from article"
     },
     {
       "perspective": "right",
-      "label": "Conservative View", 
-      "outlet": "Name of the actual outlet",
-      "headline": "The actual headline from the article",
-      "summary": "2-3 sentence summary based on the actual article content",
+      "label": "Right-Leaning Source", 
+      "outlet": "Exact outlet name from article",
+      "headline": "Exact headline from article",
+      "summary": "Factual 2-3 sentence summary of what this specific article reports",
       "timeAgo": "Recently",
-      "articleUrl": "The real URL from the articles above"
+      "articleUrl": "Exact URL from article"
     }
   ]
 }`;
@@ -354,9 +410,9 @@ The JSON must follow this exact structure:
         model: 'google/gemini-2.5-flash',
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: `Analyze the following topic from multiple perspectives: "${topic}". ${realArticles.length > 0 ? 'Use the real articles provided to create accurate summaries with working URLs.' : 'Provide realistic news coverage as it would appear today.'}` }
+          { role: 'user', content: `Organize coverage of "${topic}" by selecting one article from each political lean (left, center, right) from the provided list. Use the actual content provided to write factual summaries - do not interpret or add spin.` }
         ],
-        temperature: 0.7,
+        temperature: 0.3, // Lower temperature for more factual output
       }),
     });
 
