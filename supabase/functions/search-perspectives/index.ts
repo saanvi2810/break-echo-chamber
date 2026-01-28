@@ -78,6 +78,52 @@ function isValidSourceForBias(url: string, bias: 'left' | 'center' | 'right'): b
   }
 }
 
+function normalizeCitationUrl(rawUrl: string): string {
+  // Perplexity citations sometimes include redirect/tracking URLs (google.com/url?..., news.google.com/articles?...)
+  // We try to extract the final publisher URL so domain validation works.
+  try {
+    const u = new URL(rawUrl);
+    const host = u.hostname.toLowerCase().replace('www.', '');
+
+    const candidates = ['url', 'u', 'q', 'target', 'redirect'];
+
+    // Common redirectors: google.com/url, news.google.com, bing.com, etc.
+    if (
+      host === 'google.com' ||
+      host.endsWith('.google.com') ||
+      host === 'news.google.com' ||
+      host === 'bing.com' ||
+      host.endsWith('.bing.com') ||
+      host === 'duckduckgo.com' ||
+      host === 'perplexity.ai' ||
+      host.endsWith('.perplexity.ai')
+    ) {
+      for (const key of candidates) {
+        const v = u.searchParams.get(key);
+        if (v && v.startsWith('http')) return v;
+      }
+    }
+
+    // Some redirectors store the URL in the fragment
+    if (u.hash) {
+      const hash = u.hash.startsWith('#') ? u.hash.slice(1) : u.hash;
+      try {
+        const hp = new URLSearchParams(hash);
+        for (const key of candidates) {
+          const v = hp.get(key);
+          if (v && v.startsWith('http')) return v;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    return rawUrl;
+  } catch {
+    return rawUrl;
+  }
+}
+
 async function searchNewsByBias(
   topic: string,
   perplexityKey: string,
@@ -128,12 +174,23 @@ async function searchNewsByBias(
   console.log(`${bias} search found ${citations.length} citations (before filtering)`);
 
   // Extract articles from citations and filter to valid sources
-  const articles: NewsArticle[] = citations
-    .filter((url: string) => {
-      if (!url || typeof url !== 'string' || !url.startsWith('http')) return false;
-      // Check if URL is from a valid domain for this bias
-      return isValidSourceForBias(url, bias);
-    })
+  const normalized = citations
+    .filter((url: string) => url && typeof url === 'string' && url.startsWith('http'))
+    .map((url: string) => normalizeCitationUrl(url))
+    .filter((url: string, idx: number, arr: string[]) => arr.indexOf(url) === idx);
+
+  if (normalized.length > 0) {
+    console.log(`${bias} citation hostnames (sample):`, normalized.slice(0, 5).map((u) => {
+      try {
+        return new URL(u).hostname;
+      } catch {
+        return 'invalid-url';
+      }
+    }));
+  }
+
+  const articles: NewsArticle[] = normalized
+    .filter((url: string) => isValidSourceForBias(url, bias))
     .map((url: string) => {
       const outlet = detectOutletFromUrl(url);
       const urlDomain = new URL(url).hostname.replace('www.', '');
