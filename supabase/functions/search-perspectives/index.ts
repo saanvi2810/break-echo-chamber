@@ -173,23 +173,57 @@ async function searchWithFirecrawl(
       }
       
       const outlet = detectOutletFromUrl(url);
-      const title = result.title || `Article from ${outlet}`;
       
-      // Use scraped markdown content if available, otherwise use description
+      // Clean up title - remove markdown artifacts
+      let title = result.title || `Article from ${outlet}`;
+      title = title.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'); // Remove markdown links
+      title = title.replace(/[#*_`]/g, '').trim(); // Remove markdown formatting
+      
+      // Clean up snippet - extract readable text from markdown/description
       let snippet = '';
       if (result.markdown) {
-        // Extract first meaningful paragraph from markdown
-        const lines = result.markdown.split('\n').filter((l: string) => l.trim() && !l.startsWith('#'));
-        snippet = lines.slice(0, 2).join(' ').slice(0, 300);
-      } else if (result.description) {
-        snippet = result.description;
+        // Remove markdown formatting, links, images, etc.
+        let cleanText = result.markdown
+          .replace(/!\[[^\]]*\]\([^)]+\)/g, '') // Remove images
+          .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // Convert links to text
+          .replace(/#{1,6}\s*/g, '') // Remove headers
+          .replace(/[*_`~]/g, '') // Remove formatting chars
+          .replace(/\n+/g, ' ') // Convert newlines to spaces
+          .replace(/\s+/g, ' ') // Normalize whitespace
+          .trim();
+        
+        // Skip accessibility/navigation text
+        const skipPatterns = [
+          /^(skip to|accessibility|enable accessibility|navigation|menu|search)/i,
+          /^(left arrow|right arrow|previous|next)/i,
+          /^\d+$/,
+        ];
+        
+        // Find first substantial sentence (not navigation text)
+        const sentences = cleanText.split(/(?<=[.!?])\s+/);
+        for (const sentence of sentences) {
+          if (sentence.length > 50 && !skipPatterns.some(p => p.test(sentence))) {
+            snippet = sentence.slice(0, 300);
+            break;
+          }
+        }
+        
+        // Fallback: use cleaned text
+        if (!snippet && cleanText.length > 50) {
+          snippet = cleanText.slice(0, 300);
+        }
+      }
+      
+      // Fallback to description
+      if (!snippet && result.description) {
+        snippet = result.description.replace(/[#*_`]/g, '').trim();
       }
       
       articles.push({
         url,
         title,
         outlet,
-        snippet: snippet || 'No preview available',
+        snippet: snippet || 'Click to read the full article.',
         bias,
       });
     }
