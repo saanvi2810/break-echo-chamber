@@ -110,6 +110,11 @@ async function searchWithFirecrawl(
   const domains = domainsByBias[bias];
   const allowedDomains = new Set(domains.map(d => d.toLowerCase()));
 
+  // Topics sometimes come in as long “headline-like” strings; Firecrawl can return 0 even when Google finds results.
+  // Use a shorter fallback query (first ~6 words) to improve recall.
+  const topicClean = String(topic).replace(/["“”]/g, '').trim();
+  const topicShort = topicClean.split(/\s+/).slice(0, 6).join(' ');
+
   const chunk = <T,>(arr: T[], size: number) =>
     Array.from({ length: Math.ceil(arr.length / size) }, (_, i) => arr.slice(i * size, i * size + size));
 
@@ -207,7 +212,12 @@ async function searchWithFirecrawl(
     return articles;
   };
 
-  const fetchFirecrawl = async (query: string, tbs: 'qdr:w' | 'qdr:m') => {
+  type FirecrawlTbs = 'qdr:w' | 'qdr:m' | undefined;
+
+  const fetchFirecrawl = async (
+    query: string,
+    opts: { tbs?: FirecrawlTbs; country?: string; limit?: number }
+  ) => {
     const response = await fetch('https://api.firecrawl.dev/v1/search', {
       method: 'POST',
       headers: {
@@ -216,10 +226,10 @@ async function searchWithFirecrawl(
       },
       body: JSON.stringify({
         query,
-        limit: 10,
+        limit: opts.limit ?? 10,
         lang: 'en',
-        country: 'us',
-        tbs,
+        country: opts.country,
+        ...(opts.tbs ? { tbs: opts.tbs } : {}),
         scrapeOptions: { formats: ['markdown'] },
       }),
     });
@@ -238,27 +248,51 @@ async function searchWithFirecrawl(
     // IMPORTANT: search ALL domains for the bias in chunks (not only the first 8)
     const domainChunks = chunk(domains, 8);
 
-    const runPass = async (tbs: 'qdr:w' | 'qdr:m') => {
-      const queries = domainChunks.map(buildSearchQuery);
-      console.log(`[${bias}] Firecrawl pass (${tbs}) across ${queries.length} domain batches`);
+    const runPass = async (
+      label: string,
+      opts: { tbs?: FirecrawlTbs; country?: string; limit?: number; queryVariant?: 'paren' | 'plain' }
+    ) => {
+      console.log(`[${bias}] Firecrawl pass (${label}) across ${domainChunks.length} domain batches`);
 
-      const batchResults = await Promise.all(
-        queries.map(async (q) => {
-          console.log(`[${bias}] Firecrawl search: ${q.slice(0, 100)}...`);
-          return fetchFirecrawl(q, tbs);
-        })
-      );
+      const merged: any[] = [];
+      for (const dc of domainChunks) {
+        const siteFilters = dc.map(d => `site:${d}`).join(' OR ');
+        const buildQ = (t: string) =>
+          opts.queryVariant === 'plain' ? `${t} ${siteFilters}` : `${t} (${siteFilters})`;
 
-      const merged = batchResults.flat();
+        // Try full topic first, then a shorter query if we got nothing.
+        const q1 = buildQ(topicClean);
+        console.log(`[${bias}] Firecrawl search: ${q1.slice(0, 120)}...`);
+        const res1 = await fetchFirecrawl(q1, opts);
+        merged.push(...res1);
+
+        if (merged.length === 0 && topicShort && topicShort !== topicClean) {
+          const q2 = buildQ(topicShort);
+          console.log(`[${bias}] Firecrawl search (short): ${q2.slice(0, 120)}...`);
+          const res2 = await fetchFirecrawl(q2, opts);
+          merged.push(...res2);
+        }
+
+        // Early exit as soon as we have anything to work with
+        if (merged.length > 0) break;
+      }
+
       console.log(`[${bias}] Firecrawl returned ${merged.length} results (merged)`);
       return toArticlesFromResults(merged);
     };
 
-    // Pass 1: last week
-    let articles = await runPass('qdr:w');
+    // Pass 1: last week (US)
+    let articles = await runPass('week', { tbs: 'qdr:w', country: 'us', queryVariant: 'paren', limit: 8 });
+
+    // Pass 2: last month (US)
     if (articles.length === 0) {
-      // Pass 2: last month (still constrained to allowed domains)
-      articles = await runPass('qdr:m');
+      articles = await runPass('month', { tbs: 'qdr:m', country: 'us', queryVariant: 'paren', limit: 8 });
+    }
+
+    // Pass 3: relaxed (NO country restriction, NO recency filter, more Google-like query)
+    // This is specifically to avoid the "Google shows results but we return none" failure mode.
+    if (articles.length === 0) {
+      articles = await runPass('relaxed', { tbs: undefined, country: undefined, limit: 12, queryVariant: 'plain' });
     }
 
     // Deduplicate by URL (Firecrawl batches can overlap)
@@ -314,6 +348,8 @@ async function searchWithPerplexity(
   const data = await response.json();
   const citations: string[] = data.citations || [];
   const content = data.choices?.[0]?.message?.content || '';
+
+  console.log(`[${bias}] Perplexity citations: ${citations.length}`);
   
   const articles: NewsArticle[] = [];
   
