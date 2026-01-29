@@ -1,0 +1,45 @@
+! name: Right-Leaning News Sources
+! description: Boosts articles from right-leaning and lean-right news outlets per AllSides Media Bias Chart
+! public: true
+! author: BreakTheEchoChamber
+
+! Right-Leaning Sources
+$site=foxnews.com,boost=10
+$site=nypost.com,boost=10
+$site=breitbart.com,boost=10
+$site=newsmax.com,boost=10
+$site=oann.com,boost=10
+$site=dailywire.com,boost=10
+$site=thefederalist.com,boost=10
+$site=dailycaller.com,boost=10
+$site=theblaze.com,boost=10
+$site=townhall.com,boost=10
+$site=pjmedia.com,boost=10
+$site=hotair.com,boost=10
+$site=redstate.com,boost=10
+$site=thegatewaypundit.com,boost=10
+$site=wsj.com,boost=10
+$site=washingtonexaminer.com,boost=10
+$site=nationalreview.com,boost=10
+$site=washingtontimes.com,boost=10
+$site=freebeacon.com,boost=10
+$site=foxbusiness.com,boost=10
+$site=reason.com,boost=10
+$site=spectator.org,boost=10
+$site=americanthinker.com,boost=10
+$site=theepochtimes.com,boost=10
+$site=justthenews.com,boost=10
+$site=dailymail.co.uk,boost=8
+$site=heritage.org,boost=8
+$site=aei.org,boost=8
+$site=cato.org,boost=8
+$site=ijr.com,boost=8
+
+! Discard non-news content
+$site=twitter.com,discard
+$site=facebook.com,discard
+$site=instagram.com,discard
+$site=youtube.com,discard
+$site=reddit.com,discard
+$site=tiktok.com,discard
+$site=wikipedia.org,discard

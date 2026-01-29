@@ -6,11 +6,9 @@ const corsHeaders = {
 
 // AllSides-aligned Left & Lean Left sources
 const LEFT_DOMAINS = [
-  // Major Left-Leaning
   'msnbc.com', 'cnn.com', 'nytimes.com', 'washingtonpost.com', 'theguardian.com',
   'huffpost.com', 'vox.com', 'slate.com', 'theatlantic.com', 'thedailybeast.com',
   'motherjones.com', 'thenation.com', 'jacobin.com', 'currentaffairs.org', 'democracynow.org',
-  // Lean Left
   'npr.org', 'nbcnews.com', 'abcnews.go.com', 'cbsnews.com', 'politico.com',
   'newyorker.com', 'time.com', 'buzzfeednews.com', 'theintercept.com', 'propublica.org',
   'salon.com', 'vanityfair.com', 'rollingstone.com', 'esquire.com', 'gq.com',
@@ -100,7 +98,7 @@ function cleanText(text: string): string {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Brave Search API
+// Brave Search API - search broadly, filter to left sources
 // ─────────────────────────────────────────────────────────────
 
 async function searchBrave(topic: string): Promise<Article[]> {
@@ -111,16 +109,15 @@ async function searchBrave(topic: string): Promise<Article[]> {
 
   const topicClean = String(topic).replace(/["""]/g, '').trim();
   
-  // Build query with site: operators for left-leaning sources
-  const siteOperators = LEFT_DOMAINS.slice(0, 5).map(d => `site:${d}`).join(' OR ');
-  const fullQuery = `(${siteOperators}) ${topicClean}`;
+  // Search broadly for news, then filter results to left-leaning sources
+  const fullQuery = `${topicClean} news`;
   
-  console.log(`[LEFT] Searching Brave: ${fullQuery.slice(0, 100)}...`);
+  console.log(`[LEFT] Searching Brave broadly: "${fullQuery}"`);
 
   const params = new URLSearchParams({
     q: fullQuery,
-    count: '20',
-    freshness: 'pw', // past week
+    count: '50', // Request more results since we'll filter
+    freshness: 'pw',
     text_decorations: 'false',
   });
 
@@ -140,12 +137,13 @@ async function searchBrave(topic: string): Promise<Article[]> {
 
   const data = await response.json();
   const results = data.web?.results || [];
-  console.log(`[LEFT] Brave Search returned ${results.length} results`);
+  console.log(`[LEFT] Brave returned ${results.length} total results, filtering to left sources...`);
 
   const articles: Article[] = [];
   for (const result of results) {
     const url = result.url || '';
 
+    // Filter to only left-leaning domains
     if (!url || !isAllowedDomain(url, LEFT_DOMAINS) || !isArticlePath(url)) continue;
 
     const outlet = detectOutlet(url);
@@ -162,11 +160,12 @@ async function searchBrave(topic: string): Promise<Article[]> {
     });
   }
 
+  console.log(`[LEFT] Found ${articles.length} articles from left-leaning sources`);
   return articles;
 }
 
 // ─────────────────────────────────────────────────────────────
-// Firecrawl fallback
+// Firecrawl fallback - also search broadly
 // ─────────────────────────────────────────────────────────────
 
 async function searchFirecrawl(topic: string): Promise<Article[]> {
@@ -175,11 +174,9 @@ async function searchFirecrawl(topic: string): Promise<Article[]> {
     throw new Error('Firecrawl API key not configured');
   }
 
-  // Build a query that targets left-leaning sources
-  const siteQuery = LEFT_DOMAINS.slice(0, 5).map(d => `site:${d}`).join(' OR ');
-  const query = `${topic} (${siteQuery})`;
+  const query = `${topic} news`;
 
-  console.log(`[LEFT] Firecrawl fallback search: ${query.slice(0, 80)}...`);
+  console.log(`[LEFT] Firecrawl fallback: "${query}"`);
 
   const response = await fetch('https://api.firecrawl.dev/v1/search', {
     method: 'POST',
@@ -189,7 +186,7 @@ async function searchFirecrawl(topic: string): Promise<Article[]> {
     },
     body: JSON.stringify({
       query,
-      limit: 15,
+      limit: 30,
       lang: 'en',
       country: 'us',
       scrapeOptions: { formats: ['markdown'] },
@@ -204,7 +201,7 @@ async function searchFirecrawl(topic: string): Promise<Article[]> {
 
   const data = await response.json();
   const results = data.data || [];
-  console.log(`[LEFT] Firecrawl returned ${results.length} results`);
+  console.log(`[LEFT] Firecrawl returned ${results.length} results, filtering to left sources...`);
 
   const articles: Article[] = [];
   for (const result of results) {
