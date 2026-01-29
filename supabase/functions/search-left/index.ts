@@ -152,52 +152,45 @@ async function getAccessToken(key: ServiceAccountKey): Promise<string> {
 }
 
 async function searchVertexAI(topic: string): Promise<Article[]> {
-  const serviceAccountKeyJson = Deno.env.get('GOOGLE_SERVICE_ACCOUNT_KEY');
+  const apiKey = Deno.env.get('GOOGLE_SEARCH_API_KEY');
   const projectId = Deno.env.get('GOOGLE_CLOUD_PROJECT_ID');
   const engineId = Deno.env.get('VERTEX_SEARCH_ENGINE_ID');
 
-  if (!serviceAccountKeyJson || !projectId || !engineId) {
+  if (!apiKey || !projectId || !engineId) {
     throw new Error('Vertex AI not configured');
   }
 
-  const serviceAccountKey: ServiceAccountKey = JSON.parse(serviceAccountKeyJson);
-  const accessToken = await getAccessToken(serviceAccountKey);
   const topicClean = String(topic).replace(/["""]/g, '').trim();
 
   // Query-injection strategy: embed site: operators in query (no filter param)
   const siteOperators = LEFT_DOMAINS.slice(0, 5).map(d => `site:${d}`).join(' OR ');
   const fullQuery = `${siteOperators} ${topicClean}`;
   
-  console.log(`[LEFT] Searching Vertex AI with query-injection: ${fullQuery.slice(0, 100)}...`);
+  console.log(`[LEFT] Searching Vertex AI searchLite: ${fullQuery.slice(0, 100)}...`);
 
-  const endpoint = `https://discoveryengine.googleapis.com/v1/projects/${projectId}/locations/global/collections/default_collection/engines/${engineId}/servingConfigs/default_config:search`;
+  // Use searchLite endpoint with API key authentication
+  const endpoint = `https://discoveryengine.googleapis.com/v1/projects/${projectId}/locations/global/collections/default_collection/engines/${engineId}/servingConfigs/default_config:searchLite?key=${apiKey}`;
 
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
       query: fullQuery,
       pageSize: 30,
-      queryExpansionSpec: { condition: 'AUTO' },
-      spellCorrectionSpec: { mode: 'AUTO' },
-      contentSearchSpec: {
-        snippetSpec: { returnSnippet: true },
-      },
     }),
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error(`[LEFT] Vertex AI error: ${response.status} - ${errorText.slice(0, 300)}`);
+    console.error(`[LEFT] Vertex AI searchLite error: ${response.status} - ${errorText.slice(0, 300)}`);
     throw new Error(`Vertex AI ${response.status}`);
   }
 
   const data = await response.json();
   const results = data.results || [];
-  console.log(`[LEFT] Vertex AI returned ${results.length} results`);
+  console.log(`[LEFT] Vertex AI searchLite returned ${results.length} results`);
 
   const articles: Article[] = [];
   for (const result of results) {
