@@ -168,6 +168,10 @@ async function searchVertexAI(topic: string): Promise<Article[]> {
   // Use engines path with default_config serving config (standard for website search)
   const endpoint = `https://discoveryengine.googleapis.com/v1/projects/${projectId}/locations/global/collections/default_collection/engines/${engineId}/servingConfigs/default_config:search`;
 
+  // Build filter with proper quoting for Vertex AI Basic Search
+  const filterStr = RIGHT_DOMAINS.map(d => `siteSearch: "${d}"`).join(' OR ');
+  console.log(`[RIGHT] Filter string: ${filterStr.slice(0, 100)}...`);
+
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
@@ -177,6 +181,7 @@ async function searchVertexAI(topic: string): Promise<Article[]> {
     body: JSON.stringify({
       query: topicClean,
       pageSize: 30,
+      filter: filterStr,
       queryExpansionSpec: { condition: 'AUTO' },
       spellCorrectionSpec: { mode: 'AUTO' },
       contentSearchSpec: {
