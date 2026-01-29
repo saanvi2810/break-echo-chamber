@@ -1,9 +1,12 @@
 ! name: Center News Sources
-! description: Boosts articles from center and unbiased news outlets per AllSides Media Bias Chart
+! description: Shows only articles from center and unbiased news outlets per AllSides Media Bias Chart
 ! public: true
 ! author: BreakTheEchoChamber
 
-! Center Sources
+! Discard all sites by default
+$discard
+
+! Center Sources (override discard)
 $site=reuters.com,boost=10
 $site=apnews.com,boost=10
 $site=c-span.org,boost=10
@@ -18,25 +21,16 @@ $site=cbsnews.com,boost=10
 $site=nbcnews.com,boost=10
 $site=economist.com,boost=10
 $site=bloomberg.com,boost=10
-$site=forbes.com,boost=8
-$site=politico.com,boost=8
+$site=forbes.com,boost=10
+$site=politico.com,boost=10
 $site=realclearpolitics.com,boost=10
 $site=allsides.com,boost=10
-$site=theweek.com,boost=8
+$site=theweek.com,boost=10
 $site=newsnation.com,boost=10
-$site=newsweek.com,boost=8
-$site=time.com,boost=8
+$site=newsweek.com,boost=10
+$site=time.com,boost=10
 $site=csmonitor.com,boost=10
-$site=marketwatch.com,boost=8
-$site=statista.com,boost=8
+$site=marketwatch.com,boost=10
+$site=statista.com,boost=10
 $site=factcheck.org,boost=10
-$site=snopes.com,boost=8
-
-! Discard non-news content
-$site=twitter.com,discard
-$site=facebook.com,discard
-$site=instagram.com,discard
-$site=youtube.com,discard
-$site=reddit.com,discard
-$site=tiktok.com,discard
-$site=wikipedia.org,discard
+$site=snopes.com,boost=10
