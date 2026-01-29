@@ -4,16 +4,8 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-// AllSides-aligned Right & Lean Right sources
-const RIGHT_DOMAINS = [
-  'foxnews.com', 'nypost.com', 'breitbart.com', 'newsmax.com', 'oann.com',
-  'dailywire.com', 'thefederalist.com', 'dailycaller.com', 'theblaze.com', 'infowars.com',
-  'townhall.com', 'pjmedia.com', 'hotair.com', 'redstate.com', 'thegatewaypundit.com',
-  'wsj.com', 'washingtonexaminer.com', 'nationalreview.com', 'washingtontimes.com',
-  'freebeacon.com', 'foxbusiness.com', 'reason.com', 'spectator.org', 'americanthinker.com',
-  'theepochtimes.com', 'justthenews.com', 'dailymail.co.uk', 'nypost.com',
-  'heritage.org', 'aei.org', 'cato.org',
-];
+// Brave Goggles ID for right-leaning sources
+const GOGGLES_ID = 'https://raw.githubusercontent.com/saanvi2810/break-echo-chamber/main/public/goggles/right-sources.goggle';
 
 const outletNames: Record<string, string> = {
   'foxnews.com': 'Fox News',
@@ -25,7 +17,6 @@ const outletNames: Record<string, string> = {
   'thefederalist.com': 'The Federalist',
   'dailycaller.com': 'Daily Caller',
   'theblaze.com': 'The Blaze',
-  'infowars.com': 'InfoWars',
   'townhall.com': 'Townhall',
   'pjmedia.com': 'PJ Media',
   'hotair.com': 'Hot Air',
@@ -46,6 +37,7 @@ const outletNames: Record<string, string> = {
   'heritage.org': 'Heritage Foundation',
   'aei.org': 'AEI',
   'cato.org': 'Cato Institute',
+  'ijr.com': 'IJR',
 };
 
 interface Article {
@@ -55,28 +47,6 @@ interface Article {
   snippet: string;
   perspective: 'left' | 'center' | 'right';
   label: string;
-}
-
-function isAllowedDomain(url: string, domains: string[]): boolean {
-  try {
-    const host = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
-    return domains.some((d) => host === d.toLowerCase().replace(/^www\./, '') || host.endsWith('.' + d.toLowerCase().replace(/^www\./, '')));
-  } catch {
-    return false;
-  }
-}
-
-function isArticlePath(url: string): boolean {
-  try {
-    const u = new URL(url);
-    const path = u.pathname.toLowerCase();
-    if (path === '/' || path === '') return false;
-    if (path.startsWith('/people') || path.startsWith('/author')) return false;
-    if (path.includes('/tag/') || path.includes('/category/')) return false;
-    return path.length > 10;
-  } catch {
-    return false;
-  }
 }
 
 function detectOutlet(url: string): string {
@@ -92,8 +62,21 @@ function cleanText(text: string): string {
   return (text || '').replace(/<[^>]+>/g, '').replace(/&[a-z]+;/gi, ' ').replace(/\s+/g, ' ').trim();
 }
 
+function isArticlePath(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const path = u.pathname.toLowerCase();
+    if (path === '/' || path === '') return false;
+    if (path.startsWith('/people') || path.startsWith('/author')) return false;
+    if (path.includes('/tag/') || path.includes('/category/')) return false;
+    return path.length > 10;
+  } catch {
+    return false;
+  }
+}
+
 // ─────────────────────────────────────────────────────────────
-// Brave Search API - search broadly, filter to right sources
+// Brave Search API with Goggles
 // ─────────────────────────────────────────────────────────────
 
 async function searchBrave(topic: string): Promise<Article[]> {
@@ -103,18 +86,15 @@ async function searchBrave(topic: string): Promise<Article[]> {
   }
 
   const topicClean = String(topic).replace(/["""]/g, '').trim();
-  
-  // Search broadly for news, then filter results to right-leaning sources
-  const fullQuery = `${topicClean} news`;
-  
-  console.log(`[RIGHT] Searching Brave broadly: "${fullQuery}"`);
+
+  console.log(`[RIGHT] Searching with Goggles: "${topicClean}"`);
 
   const params = new URLSearchParams({
-    q: fullQuery,
-    // Brave's API can be picky about params; keep this conservative.
-    count: '20',
+    q: topicClean,
+    count: '10',
     freshness: 'pw',
     text_decorations: 'false',
+    goggles_id: GOGGLES_ID,
   });
 
   const response = await fetch(`https://api.search.brave.com/res/v1/web/search?${params}`, {
@@ -133,13 +113,12 @@ async function searchBrave(topic: string): Promise<Article[]> {
 
   const data = await response.json();
   const results = data.web?.results || [];
-  console.log(`[RIGHT] Brave returned ${results.length} total results, filtering to right sources...`);
+  console.log(`[RIGHT] Brave Goggles returned ${results.length} results`);
 
   const articles: Article[] = [];
   for (const result of results) {
     const url = result.url || '';
-
-    if (!url || !isAllowedDomain(url, RIGHT_DOMAINS) || !isArticlePath(url)) continue;
+    if (!url || !isArticlePath(url)) continue;
 
     const outlet = detectOutlet(url);
     const title = result.title || `Article from ${outlet}`;
@@ -155,69 +134,7 @@ async function searchBrave(topic: string): Promise<Article[]> {
     });
   }
 
-  console.log(`[RIGHT] Found ${articles.length} articles from right-leaning sources`);
-  return articles;
-}
-
-// ─────────────────────────────────────────────────────────────
-// Firecrawl fallback
-// ─────────────────────────────────────────────────────────────
-
-async function searchFirecrawl(topic: string): Promise<Article[]> {
-  const apiKey = Deno.env.get('FIRECRAWL_API_KEY');
-  if (!apiKey) {
-    throw new Error('Firecrawl API key not configured');
-  }
-
-  const query = `${topic} news`;
-
-  console.log(`[RIGHT] Firecrawl fallback: "${query}"`);
-
-  const response = await fetch('https://api.firecrawl.dev/v1/search', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      query,
-      limit: 30,
-      lang: 'en',
-      country: 'us',
-      scrapeOptions: { formats: ['markdown'] },
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error(`[RIGHT] Firecrawl error: ${response.status} - ${errorText.slice(0, 300)}`);
-    throw new Error(`Firecrawl ${response.status}`);
-  }
-
-  const data = await response.json();
-  const results = data.data || [];
-  console.log(`[RIGHT] Firecrawl returned ${results.length} results, filtering...`);
-
-  const articles: Article[] = [];
-  for (const result of results) {
-    const url = result.url || '';
-
-    if (!url || !isAllowedDomain(url, RIGHT_DOMAINS) || !isArticlePath(url)) continue;
-
-    const outlet = detectOutlet(url);
-    const title = result.title || `Article from ${outlet}`;
-    const snippet = result.description || result.markdown?.slice(0, 200) || title;
-
-    articles.push({
-      url,
-      title: cleanText(title),
-      outlet,
-      snippet: cleanText(snippet),
-      perspective: 'right',
-      label: 'Right-Leaning Source',
-    });
-  }
-
+  console.log(`[RIGHT] Found ${articles.length} articles`);
   return articles;
 }
 
@@ -239,24 +156,11 @@ Deno.serve(async (req) => {
       });
     }
 
-    let articles: Article[] = [];
-    let source = 'brave';
+    const articles = await searchBrave(topic);
 
-    try {
-      articles = await searchBrave(topic);
-    } catch (braveError) {
-      console.warn(`[RIGHT] Brave failed, trying Firecrawl fallback: ${braveError}`);
-      source = 'firecrawl';
-      try {
-        articles = await searchFirecrawl(topic);
-      } catch (firecrawlError) {
-        console.error(`[RIGHT] Firecrawl fallback also failed: ${firecrawlError}`);
-      }
-    }
+    console.log(`[RIGHT] Final result: ${articles.length} articles`);
 
-    console.log(`[RIGHT] Final result: ${articles.length} articles from ${source}`);
-
-    return new Response(JSON.stringify({ success: true, articles, source }), {
+    return new Response(JSON.stringify({ success: true, articles, source: 'brave-goggles' }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
 
