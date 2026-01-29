@@ -30,6 +30,15 @@ const outletNames: Record<string, string> = {
   'townhall.com': 'Townhall',
 };
 
+function isAllowedDomain(url: string, domains: string[]): boolean {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+    return domains.some((d) => host === d.toLowerCase().replace(/^www\./, ''));
+  } catch {
+    return false;
+  }
+}
+
 interface ServiceAccountKey {
   client_email: string;
   private_key: string;
@@ -155,8 +164,8 @@ Deno.serve(async (req) => {
     const serviceAccountKey: ServiceAccountKey = JSON.parse(serviceAccountKeyJson);
     const accessToken = await getAccessToken(serviceAccountKey);
 
-    // Build domain filter for right-leaning sources
-    const domainFilter = RIGHT_DOMAINS.map(d => `link: "${d}"`).join(' OR ');
+    // NOTE: Discovery Engine filter syntax varies by engine configuration.
+    // We do strict post-filtering to guarantee only approved domains.
     const topicClean = String(topic).replace(/["""]/g, '').trim();
 
     console.log(`[RIGHT] Searching Vertex AI for: ${topicClean.slice(0, 50)}...`);
@@ -171,8 +180,7 @@ Deno.serve(async (req) => {
       },
       body: JSON.stringify({
         query: topicClean,
-        filter: domainFilter,
-        pageSize: 10,
+        pageSize: 30,
         queryExpansionSpec: { condition: 'AUTO' },
         spellCorrectionSpec: { mode: 'AUTO' },
         contentSearchSpec: {
@@ -198,7 +206,7 @@ Deno.serve(async (req) => {
       const doc = result.document?.derivedStructData || result.document?.structData || {};
       const url = doc.link || doc.url || '';
 
-      if (!url || !isArticlePath(url)) continue;
+      if (!url || !isAllowedDomain(url, RIGHT_DOMAINS) || !isArticlePath(url)) continue;
 
       const outlet = detectOutlet(url);
       const title = doc.title || doc.htmlTitle || `Article from ${outlet}`;
