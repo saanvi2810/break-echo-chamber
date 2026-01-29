@@ -118,92 +118,186 @@ function getBiasForUrl(url: string): 'left' | 'center' | 'right' | null {
   }
 }
 
-// ============ GOOGLE CUSTOM SEARCH API (PRIMARY) ============
+// ============ VERTEX AI SEARCH (PRIMARY) ============
 
-async function searchGoogleCSE(
+interface ServiceAccountKey {
+  client_email: string;
+  private_key: string;
+  project_id?: string;
+}
+
+// Generate JWT for Google Cloud authentication
+async function generateGoogleJWT(serviceAccountKey: ServiceAccountKey): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const header = { alg: 'RS256', typ: 'JWT' };
+  const payload = {
+    iss: serviceAccountKey.client_email,
+    sub: serviceAccountKey.client_email,
+    aud: 'https://oauth2.googleapis.com/token',
+    iat: now,
+    exp: now + 3600,
+    scope: 'https://www.googleapis.com/auth/cloud-platform',
+  };
+
+  const encoder = new TextEncoder();
+  const headerB64 = btoa(JSON.stringify(header)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const payloadB64 = btoa(JSON.stringify(payload)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const unsignedToken = `${headerB64}.${payloadB64}`;
+
+  // Import the private key for signing
+  const pemHeader = '-----BEGIN PRIVATE KEY-----';
+  const pemFooter = '-----END PRIVATE KEY-----';
+  const pemContents = serviceAccountKey.private_key
+    .replace(pemHeader, '')
+    .replace(pemFooter, '')
+    .replace(/\n/g, '');
+  
+  const binaryDer = Uint8Array.from(atob(pemContents), c => c.charCodeAt(0));
+  
+  const cryptoKey = await crypto.subtle.importKey(
+    'pkcs8',
+    binaryDer,
+    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+
+  const signature = await crypto.subtle.sign(
+    'RSASSA-PKCS1-v1_5',
+    cryptoKey,
+    encoder.encode(unsignedToken)
+  );
+
+  const signatureB64 = btoa(String.fromCharCode(...new Uint8Array(signature)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+  return `${unsignedToken}.${signatureB64}`;
+}
+
+// Exchange JWT for access token
+async function getGoogleAccessToken(serviceAccountKey: ServiceAccountKey): Promise<string> {
+  const jwt = await generateGoogleJWT(serviceAccountKey);
+  
+  const response = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion: jwt,
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    console.error('Failed to get Google access token:', error);
+    throw new Error('Failed to authenticate with Google Cloud');
+  }
+
+  const data = await response.json();
+  return data.access_token;
+}
+
+async function searchVertexAI(
   topic: string,
   bias: 'left' | 'center' | 'right',
-  googleApiKey: string,
-  googleCseId: string,
-  dateRestrict: 'w1' | 'm1'
-): Promise<{ articles: NewsArticle[]; forbidden: boolean }> {
+  accessToken: string,
+  projectId: string,
+  engineId: string
+): Promise<NewsArticle[]> {
   const domains = domainsByBias[bias];
   const topicClean = String(topic).replace(/["""]/g, '').trim();
   
-  // Google CSE allows site restriction via siteSearch parameter or in query
-  // We'll use the query approach with site: operators
-  const siteFilters = domains.slice(0, 5).map(d => `site:${d}`).join(' OR ');
-  const query = `${topicClean} (${siteFilters})`;
+  // Build filter for specific news domains
+  const domainFilters = domains.slice(0, 10).map(d => `"${d}"`).join(', ');
   
-  const params = new URLSearchParams({
-    key: googleApiKey,
-    cx: googleCseId,
-    q: query,
-    num: '10',
-    dateRestrict, // primary: last week, fallback: last month
-    safe: 'active',
-  });
+  const endpoint = `https://discoveryengine.googleapis.com/v1/projects/${projectId}/locations/global/collections/default_collection/engines/${engineId}/servingConfigs/default_search:search`;
 
-  console.log(`[${bias}] Google CSE search: ${topicClean.slice(0, 50)}...`);
+  console.log(`[${bias}] Vertex AI Search: ${topicClean.slice(0, 50)}...`);
 
   try {
-    const response = await fetch(`https://www.googleapis.com/customsearch/v1?${params}`);
-    
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        query: topicClean,
+        pageSize: 10,
+        queryExpansionSpec: { condition: 'AUTO' },
+        spellCorrectionSpec: { mode: 'AUTO' },
+        contentSearchSpec: {
+          snippetSpec: { returnSnippet: true },
+          summarySpec: { summaryResultCount: 5 },
+        },
+      }),
+    });
+
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(`[${bias}] Google CSE error: ${response.status} - ${errorText.slice(0, 200)}`);
-      const forbidden = response.status === 403;
-      return { articles: [], forbidden };
+      console.error(`[${bias}] Vertex AI Search error: ${response.status} - ${errorText.slice(0, 300)}`);
+      return [];
     }
 
     const data = await response.json();
-    const items = data.items || [];
+    const results = data.results || [];
     
-    console.log(`[${bias}] Google CSE returned ${items.length} results`);
+    console.log(`[${bias}] Vertex AI returned ${results.length} results`);
 
     const articles: NewsArticle[] = [];
-    for (const item of items) {
-      const url = item.link;
+    for (const result of results) {
+      const doc = result.document?.derivedStructData || result.document?.structData || {};
+      const url = doc.link || doc.url || '';
+      
       if (!url || !isArticlePath(url)) continue;
       
       const detectedBias = getBiasForUrl(url);
       if (detectedBias !== bias) continue;
 
       const outlet = detectOutletFromUrl(url);
-      const title = item.title || `Article from ${outlet}`;
-      const snippet = item.snippet || title;
+      const title = doc.title || doc.htmlTitle || `Article from ${outlet}`;
+      const snippet = doc.snippet || doc.htmlSnippet || doc.pagemap?.metatags?.[0]?.['og:description'] || title;
 
-      articles.push({ url, title, outlet, snippet, bias });
+      articles.push({ url, title: cleanText(title), outlet, snippet: cleanText(snippet), bias });
     }
 
-    return { articles, forbidden: false };
+    return articles;
   } catch (error) {
-    console.error(`[${bias}] Google CSE fetch error:`, error);
-    return { articles: [], forbidden: false };
+    console.error(`[${bias}] Vertex AI Search fetch error:`, error);
+    return [];
   }
 }
 
-// Search all biases in parallel with Google CSE
-async function searchAllGoogleCSE(
+function cleanText(text: string): string {
+  return (text || '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&[a-z]+;/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Search all biases in parallel with Vertex AI Search
+async function searchAllVertexAI(
   topic: string,
-  googleApiKey: string,
-  googleCseId: string,
-  dateRestrict: 'w1' | 'm1'
-): Promise<{ articles: NewsArticle[]; forbidden: boolean }> {
-  console.log(`Using Google Custom Search API (primary) dateRestrict=${dateRestrict}`);
+  accessToken: string,
+  projectId: string,
+  engineId: string
+): Promise<NewsArticle[]> {
+  console.log('Using Vertex AI Search (primary)');
   
   const [left, center, right] = await Promise.all([
-    searchGoogleCSE(topic, 'left', googleApiKey, googleCseId, dateRestrict),
-    searchGoogleCSE(topic, 'center', googleApiKey, googleCseId, dateRestrict),
-    searchGoogleCSE(topic, 'right', googleApiKey, googleCseId, dateRestrict),
+    searchVertexAI(topic, 'left', accessToken, projectId, engineId),
+    searchVertexAI(topic, 'center', accessToken, projectId, engineId),
+    searchVertexAI(topic, 'right', accessToken, projectId, engineId),
   ]);
 
-  const articles = [...left.articles, ...center.articles, ...right.articles];
-  const forbidden = !!(left.forbidden && center.forbidden && right.forbidden);
+  const articles = [...left, ...center, ...right];
   
-  console.log(`Google CSE total: left=${left.articles.length}, center=${center.articles.length}, right=${right.articles.length}`);
+  console.log(`Vertex AI total: left=${left.length}, center=${center.length}, right=${right.length}`);
   
-  return { articles, forbidden };
+  return articles;
 }
 
 // ============ FIRECRAWL FALLBACK ============
@@ -360,6 +454,9 @@ async function searchPerplexityForBias(
 
 async function searchNews(
   topic: string,
+  vertexAccessToken: string | undefined,
+  projectId: string | undefined,
+  engineId: string | undefined,
   firecrawlKey: string | undefined,
   perplexityKey: string | undefined
 ): Promise<NewsArticle[]> {
@@ -380,11 +477,18 @@ async function searchNews(
   const hasBias = (b: 'left' | 'center' | 'right') => articles.some(a => a.bias === b);
   const getMissingBiases = () => (['left', 'center', 'right'] as const).filter(b => !hasBias(b));
 
+  // PRIMARY: Vertex AI Search
+  if (vertexAccessToken && projectId && engineId) {
+    console.log('Using Vertex AI Search as primary provider');
+    const vertexResults = await searchAllVertexAI(topic, vertexAccessToken, projectId, engineId);
+    addUnique(vertexResults);
+  }
+
   const tryFillMissing = async (opts: { tbs: 'qdr:w' | 'qdr:m'; recency: 'week' | 'month' }) => {
     const missing = getMissingBiases();
     if (missing.length === 0) return;
 
-    // Firecrawl for missing biases (PRIMARY)
+    // Firecrawl for missing biases (FALLBACK 1)
     if (firecrawlKey) {
       console.log(`Filling biases with Firecrawl (${opts.tbs}): ${missing.join(', ')}`);
       const firecrawlResults = await Promise.all(
@@ -396,7 +500,7 @@ async function searchNews(
     const stillMissing = getMissingBiases();
     if (stillMissing.length === 0) return;
 
-    // Perplexity for still missing (FALLBACK)
+    // Perplexity for still missing (FALLBACK 2)
     if (perplexityKey) {
       console.log(`Filling still-missing biases with Perplexity (${opts.recency}): ${stillMissing.join(', ')}`);
       const perplexityResults = await Promise.all(
@@ -406,7 +510,7 @@ async function searchNews(
     }
   };
 
-  // First pass (week)
+  // First pass (week) - fill missing biases
   await tryFillMissing({ tbs: 'qdr:w', recency: 'week' });
 
   // If we still can't populate all 3 perspectives, expand recency window (month)
@@ -489,10 +593,13 @@ Deno.serve(async (req) => {
     }
 
     const aiKey = Deno.env.get('LOVABLE_API_KEY');
-    const googleApiKey = Deno.env.get('GOOGLE_SEARCH_API_KEY');
-    const googleCseId = Deno.env.get('GOOGLE_SEARCH_ENGINE_ID');
     const firecrawlKey = Deno.env.get('FIRECRAWL_API_KEY');
     const perplexityKey = Deno.env.get('PERPLEXITY_API_KEY');
+    
+    // Vertex AI Search credentials
+    const serviceAccountKeyJson = Deno.env.get('GOOGLE_SERVICE_ACCOUNT_KEY');
+    const projectId = Deno.env.get('GOOGLE_CLOUD_PROJECT_ID');
+    const engineId = Deno.env.get('VERTEX_SEARCH_ENGINE_ID');
 
     if (!aiKey) {
       return new Response(
@@ -501,11 +608,24 @@ Deno.serve(async (req) => {
       );
     }
 
+    // Get Vertex AI access token if credentials are available
+    let vertexAccessToken: string | undefined;
+    if (serviceAccountKeyJson && projectId && engineId) {
+      try {
+        const serviceAccountKey: ServiceAccountKey = JSON.parse(serviceAccountKeyJson);
+        vertexAccessToken = await getGoogleAccessToken(serviceAccountKey);
+        console.log('Vertex AI Search credentials configured');
+      } catch (e) {
+        console.error('Failed to parse service account key or get access token:', e);
+      }
+    }
+
     console.log('Searching perspectives for topic:', topic);
+    console.log('Vertex AI Search available:', !!vertexAccessToken);
     console.log('Firecrawl available:', !!firecrawlKey);
     console.log('Perplexity available:', !!perplexityKey);
 
-    const realArticles = await searchNews(topic, firecrawlKey, perplexityKey);
+    const realArticles = await searchNews(topic, vertexAccessToken, projectId, engineId, firecrawlKey, perplexityKey);
 
     if (realArticles.length === 0) {
       return new Response(
