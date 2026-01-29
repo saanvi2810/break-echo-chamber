@@ -42,6 +42,33 @@ export interface SearchResult {
   retryCount?: number;
 }
 
+interface Article {
+  url: string;
+  title: string;
+  outlet: string;
+  snippet: string;
+  perspective: 'left' | 'center' | 'right';
+  label: string;
+}
+
+interface PerspectiveSearchResponse {
+  success: boolean;
+  articles: Article[];
+  error?: string;
+}
+
+function articleToPerspective(article: Article): Perspective {
+  return {
+    perspective: article.perspective,
+    label: article.label,
+    outlet: article.outlet,
+    headline: article.title,
+    summary: article.snippet,
+    timeAgo: 'Recent',
+    articleUrl: article.url,
+  };
+}
+
 export async function searchPerspectives(
   topic: string,
   onRetry?: (attempt: number) => void
@@ -51,25 +78,61 @@ export async function searchPerspectives(
   try {
     const result = await withRetry(
       async () => {
-        const { data, error } = await supabase.functions.invoke('search-perspectives', {
-          body: { topic },
-        });
+        // Call all three perspective endpoints in parallel
+        const [leftRes, centerRes, rightRes] = await Promise.all([
+          supabase.functions.invoke<PerspectiveSearchResponse>('search-left', {
+            body: { topic },
+          }),
+          supabase.functions.invoke<PerspectiveSearchResponse>('search-center', {
+            body: { topic },
+          }),
+          supabase.functions.invoke<PerspectiveSearchResponse>('search-right', {
+            body: { topic },
+          }),
+        ]);
 
-        if (error) {
-          console.error('Error fetching perspectives:', error);
-          throw new Error(error.message || 'Failed to fetch perspectives');
+        // Log any errors but don't fail entirely if one perspective fails
+        if (leftRes.error) console.error('[LEFT] Error:', leftRes.error);
+        if (centerRes.error) console.error('[CENTER] Error:', centerRes.error);
+        if (rightRes.error) console.error('[RIGHT] Error:', rightRes.error);
+
+        // Extract articles from each response
+        const leftArticles = leftRes.data?.articles || [];
+        const centerArticles = centerRes.data?.articles || [];
+        const rightArticles = rightRes.data?.articles || [];
+
+        console.log(`[PERSPECTIVES] Left: ${leftArticles.length}, Center: ${centerArticles.length}, Right: ${rightArticles.length}`);
+
+        // Convert articles to perspectives
+        const perspectives: Perspective[] = [
+          ...leftArticles.map(articleToPerspective),
+          ...centerArticles.map(articleToPerspective),
+          ...rightArticles.map(articleToPerspective),
+        ];
+
+        // Check if we have at least some results
+        if (perspectives.length === 0) {
+          throw new Error('No articles found from any perspective');
         }
 
-        if (!data.success) {
-          throw new Error(data.error || 'Failed to analyze topic');
-        }
+        // Build response
+        const response: PerspectivesResponse = {
+          topic: {
+            title: topic,
+            description: `Analysis of "${topic}" from multiple perspectives`,
+            date: new Date().toISOString().split('T')[0],
+            tags: [],
+          },
+          perspectives,
+          factChecks: [],
+        };
 
-        return data.data as PerspectivesResponse;
+        return response;
       },
       {
-        maxRetries: 3,
+        maxRetries: 2,
         baseDelay: 1000,
-        maxDelay: 8000,
+        maxDelay: 5000,
         onRetry: (attempt, error) => {
           retryCount = attempt;
           console.log(`Retry attempt ${attempt} after error:`, error.message);
