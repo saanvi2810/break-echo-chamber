@@ -157,8 +157,10 @@ async function searchVertexAI(topic: string): Promise<Article[]> {
   const topicClean = String(topic).replace(/["""]/g, '').trim();
 
   console.log(`[CENTER] Searching Vertex AI for: ${topicClean.slice(0, 50)}...`);
+  console.log(`[CENTER] Using engine ID: ${engineId}, project: ${projectId}`);
 
-  const endpoint = `https://discoveryengine.googleapis.com/v1/projects/${projectId}/locations/global/collections/default_collection/engines/${engineId}/servingConfigs/default_search:search`;
+  // Use engines path with default_config serving config (standard for website search)
+  const endpoint = `https://discoveryengine.googleapis.com/v1/projects/${projectId}/locations/global/collections/default_collection/engines/${engineId}/servingConfigs/default_config:search`;
 
   const response = await fetch(endpoint, {
     method: 'POST',
