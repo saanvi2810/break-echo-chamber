@@ -51,7 +51,7 @@ const TrendingTopicDisplay = ({ topic, perspectives }: TrendingTopicDisplayProps
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 max-w-6xl mx-auto">
         {perspectives.map((perspective, index) => (
           <PerspectiveCard
-            key={perspective.perspective}
+            key={`${perspective.perspective}-${perspective.articleUrl}-${index}`}
             {...perspective}
             animationDelay={`${0.3 + index * 0.1}s`}
           />
