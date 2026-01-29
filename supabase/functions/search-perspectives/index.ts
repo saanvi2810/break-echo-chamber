@@ -476,47 +476,60 @@ async function searchNews(
 
   const hasBias = (b: 'left' | 'center' | 'right') => articles.some(a => a.bias === b);
   const getMissingBiases = () => (['left', 'center', 'right'] as const).filter(b => !hasBias(b));
+  const biases: ('left' | 'center' | 'right')[] = ['left', 'center', 'right'];
 
-  // PRIMARY: Vertex AI Search
-  if (vertexAccessToken && projectId && engineId) {
-    console.log('Using Vertex AI Search as primary provider');
-    const vertexResults = await searchAllVertexAI(topic, vertexAccessToken, projectId, engineId);
-    addUnique(vertexResults);
+  // FAST PATH: Run all searches in parallel upfront
+  // Firecrawl is most reliable, run all 3 biases simultaneously with week filter
+  if (firecrawlKey) {
+    console.log('Running parallel Firecrawl search for all biases (qdr:w)');
+    const firecrawlResults = await Promise.all(
+      biases.map(b => searchFirecrawlForBias(topic, b, firecrawlKey, 'qdr:w'))
+    );
+    addUnique(firecrawlResults.flat());
   }
 
-  const tryFillMissing = async (opts: { tbs: 'qdr:w' | 'qdr:m'; recency: 'week' | 'month' }) => {
-    const missing = getMissingBiases();
-    if (missing.length === 0) return;
+  // Early exit if we have all 3 perspectives
+  if (getMissingBiases().length === 0) {
+    console.log('All perspectives found in first pass!');
+    const seen = new Set<string>();
+    const deduped = articles.filter(a => { if (seen.has(a.url)) return false; seen.add(a.url); return true; });
+    console.log(`Final: left=${deduped.filter(a => a.bias === 'left').length}, center=${deduped.filter(a => a.bias === 'center').length}, right=${deduped.filter(a => a.bias === 'right').length}`);
+    return deduped;
+  }
 
-    // Firecrawl for missing biases (FALLBACK 1)
-    if (firecrawlKey) {
-      console.log(`Filling biases with Firecrawl (${opts.tbs}): ${missing.join(', ')}`);
-      const firecrawlResults = await Promise.all(
-        missing.map(b => searchFirecrawlForBias(topic, b, firecrawlKey, opts.tbs))
+  // Fill missing with Vertex AI (if available) OR month-expanded Firecrawl
+  const missing = getMissingBiases();
+  if (missing.length > 0) {
+    console.log(`Missing biases after first pass: ${missing.join(', ')}`);
+    
+    // Try Vertex AI for missing biases if available
+    if (vertexAccessToken && projectId && engineId) {
+      console.log('Trying Vertex AI Search for missing biases');
+      const vertexResults = await Promise.all(
+        missing.map(b => searchVertexAI(topic, b, vertexAccessToken, projectId, engineId))
       );
-      addUnique(firecrawlResults.flat());
+      addUnique(vertexResults.flat());
     }
-
+    
+    // If still missing, expand to month timeframe
     const stillMissing = getMissingBiases();
-    if (stillMissing.length === 0) return;
-
-    // Perplexity for still missing (FALLBACK 2)
-    if (perplexityKey) {
-      console.log(`Filling still-missing biases with Perplexity (${opts.recency}): ${stillMissing.join(', ')}`);
+    if (stillMissing.length > 0 && firecrawlKey) {
+      console.log(`Expanding to month for: ${stillMissing.join(', ')}`);
+      const monthResults = await Promise.all(
+        stillMissing.map(b => searchFirecrawlForBias(topic, b, firecrawlKey, 'qdr:m'))
+      );
+      addUnique(monthResults.flat());
+    }
+    
+    // Last resort: Perplexity
+    const finalMissing = getMissingBiases();
+    if (finalMissing.length > 0 && perplexityKey) {
+      console.log(`Perplexity fallback for: ${finalMissing.join(', ')}`);
       const perplexityResults = await Promise.all(
-        stillMissing.map(b => searchPerplexityForBias(topic, b, perplexityKey, opts.recency))
+        finalMissing.map(b => searchPerplexityForBias(topic, b, perplexityKey, 'month'))
       );
       addUnique(perplexityResults.flat());
     }
-  };
-
-  // First pass (week) - fill missing biases
-  await tryFillMissing({ tbs: 'qdr:w', recency: 'week' });
-
-  // If we still can't populate all 3 perspectives, expand recency window (month)
-  if (getMissingBiases().length > 0) {
-    console.log('Expanding recency window to month as fallback.');
-    await tryFillMissing({ tbs: 'qdr:m', recency: 'month' });
   }
 
   // Dedupe by URL
