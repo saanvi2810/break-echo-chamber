@@ -109,7 +109,8 @@ async function searchBrave(topic: string): Promise<Article[]> {
 
   const params = new URLSearchParams({
     q: fullQuery,
-    count: '50',
+    // Brave's API can be picky about params; keep this conservative.
+    count: '20',
     freshness: 'pw',
     text_decorations: 'false',
   });

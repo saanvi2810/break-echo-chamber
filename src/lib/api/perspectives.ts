@@ -81,18 +81,22 @@ export async function searchPerspectives(
   try {
     const result = await withRetry(
       async () => {
-        // Run all three perspective searches in parallel for faster results
-        const [leftRes, centerRes, rightRes] = await Promise.all([
-          supabase.functions.invoke<PerspectiveSearchResponse>('search-left', {
-            body: { topic },
-          }),
-          supabase.functions.invoke<PerspectiveSearchResponse>('search-center', {
-            body: { topic },
-          }),
-          supabase.functions.invoke<PerspectiveSearchResponse>('search-right', {
-            body: { topic },
-          }),
-        ]);
+        // Stagger requests to respect Brave's free-tier rate limit (1 req/sec).
+        const leftRes = await supabase.functions.invoke<PerspectiveSearchResponse>('search-left', {
+          body: { topic },
+        });
+
+        await delay(1100);
+
+        const centerRes = await supabase.functions.invoke<PerspectiveSearchResponse>('search-center', {
+          body: { topic },
+        });
+
+        await delay(1100);
+
+        const rightRes = await supabase.functions.invoke<PerspectiveSearchResponse>('search-right', {
+          body: { topic },
+        });
 
         // Log any errors but don't fail entirely if one perspective fails
         if (leftRes.error) console.error('[LEFT] Error:', leftRes.error);
