@@ -1,5 +1,3 @@
-import "https://deno.land/x/xhr@0.1.0/mod.ts";
-
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
@@ -75,133 +73,57 @@ function cleanText(text: string): string {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Vertex AI helpers
+// Brave Search API
 // ─────────────────────────────────────────────────────────────
 
-interface ServiceAccountKey {
-  client_email: string;
-  private_key: string;
-  project_id?: string;
-}
-
-async function generateGoogleJWT(key: ServiceAccountKey): Promise<string> {
-  const now = Math.floor(Date.now() / 1000);
-  const header = { alg: 'RS256', typ: 'JWT' };
-  const payload = {
-    iss: key.client_email,
-    sub: key.client_email,
-    aud: 'https://oauth2.googleapis.com/token',
-    iat: now,
-    exp: now + 3600,
-    scope: 'https://www.googleapis.com/auth/cloud-platform',
-  };
-
-  const encoder = new TextEncoder();
-  const headerB64 = btoa(JSON.stringify(header)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  const payloadB64 = btoa(JSON.stringify(payload)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  const unsignedToken = `${headerB64}.${payloadB64}`;
-
-  const pemHeader = '-----BEGIN PRIVATE KEY-----';
-  const pemFooter = '-----END PRIVATE KEY-----';
-  const pemContents = key.private_key
-    .replace(pemHeader, '')
-    .replace(pemFooter, '')
-    .replace(/\\n/g, '')
-    .replace(/\n/g, '')
-    .trim();
-
-  const binaryDer = Uint8Array.from(atob(pemContents), c => c.charCodeAt(0));
-  const cryptoKey = await crypto.subtle.importKey(
-    'pkcs8',
-    binaryDer,
-    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-
-  const signature = await crypto.subtle.sign(
-    'RSASSA-PKCS1-v1_5',
-    cryptoKey,
-    encoder.encode(unsignedToken)
-  );
-
-  const signatureB64 = btoa(String.fromCharCode(...new Uint8Array(signature)))
-    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-
-  return `${unsignedToken}.${signatureB64}`;
-}
-
-async function getAccessToken(key: ServiceAccountKey): Promise<string> {
-  const jwt = await generateGoogleJWT(key);
-  const response = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-      assertion: jwt,
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error('[LEFT] Token error:', response.status, errorText.slice(0, 500));
-    throw new Error(`Failed to get access token: ${response.status}`);
-  }
-  const data = await response.json();
-  return data.access_token;
-}
-
-async function searchVertexAI(topic: string): Promise<Article[]> {
-  const apiKey = Deno.env.get('GOOGLE_SEARCH_API_KEY');
-  const projectId = Deno.env.get('GOOGLE_CLOUD_PROJECT_ID');
-  const engineId = Deno.env.get('VERTEX_SEARCH_ENGINE_ID');
-
-  if (!apiKey || !projectId || !engineId) {
-    throw new Error('Vertex AI not configured');
+async function searchBrave(topic: string): Promise<Article[]> {
+  const apiKey = Deno.env.get('BRAVE_SEARCH_API_KEY');
+  if (!apiKey) {
+    throw new Error('Brave Search API key not configured');
   }
 
   const topicClean = String(topic).replace(/["""]/g, '').trim();
-
-  // Query-injection strategy: embed site: operators in query (no filter param)
-  const siteOperators = LEFT_DOMAINS.slice(0, 5).map(d => `site:${d}`).join(' OR ');
-  const fullQuery = `${siteOperators} ${topicClean}`;
   
-  console.log(`[LEFT] Searching Vertex AI searchLite: ${fullQuery.slice(0, 100)}...`);
+  // Build query with site: operators for left-leaning sources
+  const siteOperators = LEFT_DOMAINS.slice(0, 5).map(d => `site:${d}`).join(' OR ');
+  const fullQuery = `(${siteOperators}) ${topicClean}`;
+  
+  console.log(`[LEFT] Searching Brave: ${fullQuery.slice(0, 100)}...`);
 
-  // Use searchLite endpoint with API key authentication
-  const endpoint = `https://discoveryengine.googleapis.com/v1/projects/${projectId}/locations/global/collections/default_collection/engines/${engineId}/servingConfigs/default_config:searchLite?key=${apiKey}`;
+  const params = new URLSearchParams({
+    q: fullQuery,
+    count: '20',
+    freshness: 'pw', // past week
+    text_decorations: 'false',
+  });
 
-  const response = await fetch(endpoint, {
-    method: 'POST',
+  const response = await fetch(`https://api.search.brave.com/res/v1/web/search?${params}`, {
+    method: 'GET',
     headers: {
-      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'X-Subscription-Token': apiKey,
     },
-    body: JSON.stringify({
-      query: fullQuery,
-      pageSize: 30,
-    }),
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error(`[LEFT] Vertex AI searchLite error: ${response.status} - ${errorText.slice(0, 300)}`);
-    throw new Error(`Vertex AI ${response.status}`);
+    console.error(`[LEFT] Brave Search error: ${response.status} - ${errorText.slice(0, 300)}`);
+    throw new Error(`Brave Search ${response.status}`);
   }
 
   const data = await response.json();
-  const results = data.results || [];
-  console.log(`[LEFT] Vertex AI searchLite returned ${results.length} results`);
+  const results = data.web?.results || [];
+  console.log(`[LEFT] Brave Search returned ${results.length} results`);
 
   const articles: Article[] = [];
   for (const result of results) {
-    const doc = result.document?.derivedStructData || result.document?.structData || {};
-    const url = doc.link || doc.url || '';
+    const url = result.url || '';
 
     if (!url || !isAllowedDomain(url, LEFT_DOMAINS) || !isArticlePath(url)) continue;
 
     const outlet = detectOutlet(url);
-    const title = doc.title || doc.htmlTitle || `Article from ${outlet}`;
-    const snippet = doc.snippet || doc.htmlSnippet || doc.pagemap?.metatags?.[0]?.['og:description'] || title;
+    const title = result.title || `Article from ${outlet}`;
+    const snippet = result.description || title;
 
     articles.push({
       url,
@@ -299,13 +221,13 @@ Deno.serve(async (req) => {
     }
 
     let articles: Article[] = [];
-    let source = 'vertex';
+    let source = 'brave';
 
-    // Try Vertex AI first
+    // Try Brave Search first
     try {
-      articles = await searchVertexAI(topic);
-    } catch (vertexError) {
-      console.warn(`[LEFT] Vertex failed, trying Firecrawl fallback: ${vertexError}`);
+      articles = await searchBrave(topic);
+    } catch (braveError) {
+      console.warn(`[LEFT] Brave failed, trying Firecrawl fallback: ${braveError}`);
       source = 'firecrawl';
       try {
         articles = await searchFirecrawl(topic);
