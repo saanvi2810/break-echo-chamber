@@ -156,55 +156,43 @@ async function searchVertexAI(topic: string): Promise<Article[]> {
   const accessToken = await getAccessToken(serviceAccountKey);
   const topicClean = String(topic).replace(/["""]/g, '').trim();
 
-  console.log(`[CENTER] Searching Vertex AI for: ${topicClean.slice(0, 50)}...`);
+  // Query-injection strategy: embed site: operators in query (no filter param)
+  const siteOperators = CENTER_DOMAINS.slice(0, 5).map(d => `site:${d}`).join(' OR ');
+  const fullQuery = `${siteOperators} ${topicClean}`;
+  
+  console.log(`[CENTER] Searching Vertex AI with query-injection: ${fullQuery.slice(0, 100)}...`);
 
   const endpoint = `https://discoveryengine.googleapis.com/v1/projects/${projectId}/locations/global/collections/default_collection/engines/${engineId}/servingConfigs/default_config:search`;
 
-  // Make parallel requests for top 5 domains (Basic Search can't handle OR)
-  const topDomains = CENTER_DOMAINS.slice(0, 5);
-  console.log(`[CENTER] Querying ${topDomains.length} domains in parallel...`);
-
-  const searchPromises = topDomains.map(async (domain) => {
-    const filterStr = `siteSearch: "${domain}"`;
-    
-    try {
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          query: topicClean,
-          pageSize: 5,
-          filter: filterStr,
-          queryExpansionSpec: { condition: 'AUTO' },
-          spellCorrectionSpec: { mode: 'AUTO' },
-          contentSearchSpec: {
-            snippetSpec: { returnSnippet: true },
-          },
-        }),
-      });
-
-      if (!response.ok) {
-        console.warn(`[CENTER] ${domain} failed: ${response.status}`);
-        return [];
-      }
-
-      const data = await response.json();
-      return data.results || [];
-    } catch (err) {
-      console.warn(`[CENTER] ${domain} error: ${err}`);
-      return [];
-    }
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      query: fullQuery,
+      pageSize: 30,
+      queryExpansionSpec: { condition: 'AUTO' },
+      spellCorrectionSpec: { mode: 'AUTO' },
+      contentSearchSpec: {
+        snippetSpec: { returnSnippet: true },
+      },
+    }),
   });
 
-  const allResults = await Promise.all(searchPromises);
-  const flatResults = allResults.flat();
-  console.log(`[CENTER] Vertex AI returned ${flatResults.length} total results`);
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error(`[CENTER] Vertex AI error: ${response.status} - ${errorText.slice(0, 300)}`);
+    throw new Error(`Vertex AI ${response.status}`);
+  }
+
+  const data = await response.json();
+  const results = data.results || [];
+  console.log(`[CENTER] Vertex AI returned ${results.length} results`);
 
   const articles: Article[] = [];
-  for (const result of flatResults) {
+  for (const result of results) {
     const doc = result.document?.derivedStructData || result.document?.structData || {};
     const url = doc.link || doc.url || '';
 
