@@ -4,22 +4,51 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
+// AllSides-aligned Center sources
 const CENTER_DOMAINS = [
-  'reuters.com', 'apnews.com', 'bbc.com', 'forbes.com', 'usatoday.com',
-  'newsweek.com', 'thehill.com', 'axios.com', 'csmonitor.com', 'pbs.org',
+  // Core Center
+  'reuters.com', 'apnews.com', 'bbc.com', 'c-span.org', 'allsides.com',
+  // Lean Center (mixed)
+  'thehill.com', 'axios.com', 'realclearpolitics.com', 'thefactcheck.org',
+  'csmonitor.com', 'pbs.org', 'usatoday.com', 'newsweek.com', 'forbes.com',
+  'marketwatch.com', 'npr.org', 'abcnews.go.com', 'cbsnews.com',
+  // Fact-checkers / Neutral
+  'politifact.com', 'snopes.com', 'factcheck.org',
+  // International balanced
+  'aljazeera.com', 'france24.com', 'dw.com', 'scmp.com',
+  // Financial (typically center)
+  'economist.com', 'ft.com', 'barrons.com',
 ];
 
 const outletNames: Record<string, string> = {
   'reuters.com': 'Reuters',
   'apnews.com': 'AP News',
   'bbc.com': 'BBC',
-  'forbes.com': 'Forbes',
-  'usatoday.com': 'USA Today',
-  'newsweek.com': 'Newsweek',
+  'c-span.org': 'C-SPAN',
+  'allsides.com': 'AllSides',
   'thehill.com': 'The Hill',
   'axios.com': 'Axios',
+  'realclearpolitics.com': 'RealClearPolitics',
+  'thefactcheck.org': 'FactCheck.org',
   'csmonitor.com': 'Christian Science Monitor',
   'pbs.org': 'PBS',
+  'usatoday.com': 'USA Today',
+  'newsweek.com': 'Newsweek',
+  'forbes.com': 'Forbes',
+  'marketwatch.com': 'MarketWatch',
+  'npr.org': 'NPR',
+  'abcnews.go.com': 'ABC News',
+  'cbsnews.com': 'CBS News',
+  'politifact.com': 'PolitiFact',
+  'snopes.com': 'Snopes',
+  'factcheck.org': 'FactCheck.org',
+  'aljazeera.com': 'Al Jazeera',
+  'france24.com': 'France 24',
+  'dw.com': 'DW News',
+  'scmp.com': 'South China Morning Post',
+  'economist.com': 'The Economist',
+  'ft.com': 'Financial Times',
+  'barrons.com': "Barron's",
 };
 
 interface Article {
