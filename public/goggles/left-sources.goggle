@@ -1,9 +1,12 @@
 ! name: Left-Leaning News Sources
-! description: Boosts articles from left-leaning and lean-left news outlets per AllSides Media Bias Chart
+! description: Shows only articles from left-leaning and lean-left news outlets per AllSides Media Bias Chart
 ! public: true
 ! author: BreakTheEchoChamber
 
-! Left-Leaning Sources
+! Discard all sites by default
+$discard
+
+! Left-Leaning Sources (override discard)
 $site=msnbc.com,boost=10
 $site=cnn.com,boost=10
 $site=nytimes.com,boost=10
@@ -27,24 +30,11 @@ $site=rawstory.com,boost=10
 $site=mediamatters.org,boost=10
 $site=newrepublic.com,boost=10
 $site=prospect.org,boost=10
-$site=theatlantic.com,boost=8
-$site=newyorker.com,boost=8
-$site=propublica.org,boost=8
-$site=politico.com,boost=6
-$site=npr.org,boost=6
-$site=bbc.com,boost=5
-$site=latimes.com,boost=8
-$site=bostonglobe.com,boost=8
-$site=chicagotribune.com,boost=6
-$site=buzzfeednews.com,boost=8
-$site=vice.com,boost=8
-$site=vanityfair.com,boost=6
-
-! Discard non-news content
-$site=twitter.com,discard
-$site=facebook.com,discard
-$site=instagram.com,discard
-$site=youtube.com,discard
-$site=reddit.com,discard
-$site=tiktok.com,discard
-$site=wikipedia.org,discard
+$site=theatlantic.com,boost=10
+$site=newyorker.com,boost=10
+$site=propublica.org,boost=10
+$site=latimes.com,boost=10
+$site=bostonglobe.com,boost=10
+$site=buzzfeednews.com,boost=10
+$site=vice.com,boost=10
+$site=vanityfair.com,boost=10
