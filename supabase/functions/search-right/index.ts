@@ -163,45 +163,54 @@ async function searchVertexAI(topic: string): Promise<Article[]> {
   const topicClean = String(topic).replace(/["""]/g, '').trim();
 
   console.log(`[RIGHT] Searching Vertex AI for: ${topicClean.slice(0, 50)}...`);
-  console.log(`[RIGHT] Using engine ID: ${engineId}, project: ${projectId}`);
 
-  // Use engines path with default_config serving config (standard for website search)
   const endpoint = `https://discoveryengine.googleapis.com/v1/projects/${projectId}/locations/global/collections/default_collection/engines/${engineId}/servingConfigs/default_config:search`;
 
-  // Try without space after colon as some docs suggest
-  const filterStr = '(' + RIGHT_DOMAINS.slice(0, 3).map(d => `siteSearch:"${d}"`).join(' OR ') + ')';
-  console.log(`[RIGHT] Filter string: ${filterStr}`);
+  // Make parallel requests for top 5 domains (Basic Search can't handle OR)
+  const topDomains = RIGHT_DOMAINS.slice(0, 5);
+  console.log(`[RIGHT] Querying ${topDomains.length} domains in parallel...`);
 
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      query: topicClean,
-      pageSize: 30,
-      filter: filterStr,
-      queryExpansionSpec: { condition: 'AUTO' },
-      spellCorrectionSpec: { mode: 'AUTO' },
-      contentSearchSpec: {
-        snippetSpec: { returnSnippet: true },
-      },
-    }),
+  const searchPromises = topDomains.map(async (domain) => {
+    const filterStr = `siteSearch: "${domain}"`;
+    
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          query: topicClean,
+          pageSize: 5,
+          filter: filterStr,
+          queryExpansionSpec: { condition: 'AUTO' },
+          spellCorrectionSpec: { mode: 'AUTO' },
+          contentSearchSpec: {
+            snippetSpec: { returnSnippet: true },
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        console.warn(`[RIGHT] ${domain} failed: ${response.status}`);
+        return [];
+      }
+
+      const data = await response.json();
+      return data.results || [];
+    } catch (err) {
+      console.warn(`[RIGHT] ${domain} error: ${err}`);
+      return [];
+    }
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error(`[RIGHT] Vertex AI error: ${response.status} - ${errorText.slice(0, 300)}`);
-    throw new Error(`Vertex AI ${response.status}`);
-  }
-
-  const data = await response.json();
-  const results = data.results || [];
-  console.log(`[RIGHT] Vertex AI returned ${results.length} results`);
+  const allResults = await Promise.all(searchPromises);
+  const flatResults = allResults.flat();
+  console.log(`[RIGHT] Vertex AI returned ${flatResults.length} total results`);
 
   const articles: Article[] = [];
-  for (const result of results) {
+  for (const result of flatResults) {
     const doc = result.document?.derivedStructData || result.document?.structData || {};
     const url = doc.link || doc.url || '';
 
