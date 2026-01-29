@@ -113,12 +113,10 @@ const TopicSearch = ({
         </div>
       )}
 
-      <div className="mt-4 flex flex-wrap gap-2 justify-center items-center">
-        <span className="text-sm text-muted-foreground">Trending:</span>
-        {loadingTopics ? (
-          <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
-        ) : (
-          trendingTopics.map((topic) => (
+      {!loadingTopics && trendingTopics.length > 0 && (
+        <div className="mt-4 flex flex-wrap gap-2 justify-center items-center animate-fade-in">
+          <span className="text-sm text-muted-foreground">Need ideas? Here's what's trending:</span>
+          {trendingTopics.map((topic) => (
             <button
               key={topic}
               onClick={() => {
@@ -130,9 +128,9 @@ const TopicSearch = ({
             >
               {topic}
             </button>
-          ))
-        )}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 };
