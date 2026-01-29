@@ -6,15 +6,12 @@ const corsHeaders = {
 
 // AllSides-aligned Right & Lean Right sources
 const RIGHT_DOMAINS = [
-  // Major Right-Leaning
   'foxnews.com', 'nypost.com', 'breitbart.com', 'newsmax.com', 'oann.com',
   'dailywire.com', 'thefederalist.com', 'dailycaller.com', 'theblaze.com', 'infowars.com',
   'townhall.com', 'pjmedia.com', 'hotair.com', 'redstate.com', 'thegatewaypundit.com',
-  // Lean Right
   'wsj.com', 'washingtonexaminer.com', 'nationalreview.com', 'washingtontimes.com',
   'freebeacon.com', 'foxbusiness.com', 'reason.com', 'spectator.org', 'americanthinker.com',
   'theepochtimes.com', 'justthenews.com', 'dailymail.co.uk', 'nypost.com',
-  // Conservative think tanks / opinion
   'heritage.org', 'aei.org', 'cato.org',
 ];
 
@@ -96,7 +93,7 @@ function cleanText(text: string): string {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Brave Search API
+// Brave Search API - search broadly, filter to right sources
 // ─────────────────────────────────────────────────────────────
 
 async function searchBrave(topic: string): Promise<Article[]> {
@@ -107,16 +104,15 @@ async function searchBrave(topic: string): Promise<Article[]> {
 
   const topicClean = String(topic).replace(/["""]/g, '').trim();
   
-  // Build query with site: operators for right-leaning sources
-  const siteOperators = RIGHT_DOMAINS.slice(0, 5).map(d => `site:${d}`).join(' OR ');
-  const fullQuery = `(${siteOperators}) ${topicClean}`;
+  // Search broadly for news, then filter results to right-leaning sources
+  const fullQuery = `${topicClean} news`;
   
-  console.log(`[RIGHT] Searching Brave: ${fullQuery.slice(0, 100)}...`);
+  console.log(`[RIGHT] Searching Brave broadly: "${fullQuery}"`);
 
   const params = new URLSearchParams({
     q: fullQuery,
-    count: '20',
-    freshness: 'pw', // past week
+    count: '50',
+    freshness: 'pw',
     text_decorations: 'false',
   });
 
@@ -136,7 +132,7 @@ async function searchBrave(topic: string): Promise<Article[]> {
 
   const data = await response.json();
   const results = data.web?.results || [];
-  console.log(`[RIGHT] Brave Search returned ${results.length} results`);
+  console.log(`[RIGHT] Brave returned ${results.length} total results, filtering to right sources...`);
 
   const articles: Article[] = [];
   for (const result of results) {
@@ -158,6 +154,7 @@ async function searchBrave(topic: string): Promise<Article[]> {
     });
   }
 
+  console.log(`[RIGHT] Found ${articles.length} articles from right-leaning sources`);
   return articles;
 }
 
@@ -171,10 +168,9 @@ async function searchFirecrawl(topic: string): Promise<Article[]> {
     throw new Error('Firecrawl API key not configured');
   }
 
-  const siteQuery = RIGHT_DOMAINS.slice(0, 5).map(d => `site:${d}`).join(' OR ');
-  const query = `${topic} (${siteQuery})`;
+  const query = `${topic} news`;
 
-  console.log(`[RIGHT] Firecrawl fallback search: ${query.slice(0, 80)}...`);
+  console.log(`[RIGHT] Firecrawl fallback: "${query}"`);
 
   const response = await fetch('https://api.firecrawl.dev/v1/search', {
     method: 'POST',
@@ -184,7 +180,7 @@ async function searchFirecrawl(topic: string): Promise<Article[]> {
     },
     body: JSON.stringify({
       query,
-      limit: 15,
+      limit: 30,
       lang: 'en',
       country: 'us',
       scrapeOptions: { formats: ['markdown'] },
@@ -199,7 +195,7 @@ async function searchFirecrawl(topic: string): Promise<Article[]> {
 
   const data = await response.json();
   const results = data.data || [];
-  console.log(`[RIGHT] Firecrawl returned ${results.length} results`);
+  console.log(`[RIGHT] Firecrawl returned ${results.length} results, filtering...`);
 
   const articles: Article[] = [];
   for (const result of results) {
@@ -245,7 +241,6 @@ Deno.serve(async (req) => {
     let articles: Article[] = [];
     let source = 'brave';
 
-    // Try Brave Search first
     try {
       articles = await searchBrave(topic);
     } catch (braveError) {

@@ -6,17 +6,12 @@ const corsHeaders = {
 
 // AllSides-aligned Center sources
 const CENTER_DOMAINS = [
-  // Core Center
   'reuters.com', 'apnews.com', 'bbc.com', 'c-span.org', 'allsides.com',
-  // Lean Center (mixed)
   'thehill.com', 'axios.com', 'realclearpolitics.com', 'thefactcheck.org',
   'csmonitor.com', 'pbs.org', 'usatoday.com', 'newsweek.com', 'forbes.com',
   'marketwatch.com', 'npr.org', 'abcnews.go.com', 'cbsnews.com',
-  // Fact-checkers / Neutral
   'politifact.com', 'snopes.com', 'factcheck.org',
-  // International balanced
   'aljazeera.com', 'france24.com', 'dw.com', 'scmp.com',
-  // Financial (typically center)
   'economist.com', 'ft.com', 'barrons.com',
 ];
 
@@ -96,7 +91,7 @@ function cleanText(text: string): string {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Brave Search API
+// Brave Search API - search broadly, filter to center sources
 // ─────────────────────────────────────────────────────────────
 
 async function searchBrave(topic: string): Promise<Article[]> {
@@ -107,16 +102,15 @@ async function searchBrave(topic: string): Promise<Article[]> {
 
   const topicClean = String(topic).replace(/["""]/g, '').trim();
   
-  // Build query with site: operators for center sources
-  const siteOperators = CENTER_DOMAINS.slice(0, 5).map(d => `site:${d}`).join(' OR ');
-  const fullQuery = `(${siteOperators}) ${topicClean}`;
+  // Search broadly for news, then filter results to center sources
+  const fullQuery = `${topicClean} news`;
   
-  console.log(`[CENTER] Searching Brave: ${fullQuery.slice(0, 100)}...`);
+  console.log(`[CENTER] Searching Brave broadly: "${fullQuery}"`);
 
   const params = new URLSearchParams({
     q: fullQuery,
-    count: '20',
-    freshness: 'pw', // past week
+    count: '50',
+    freshness: 'pw',
     text_decorations: 'false',
   });
 
@@ -136,7 +130,7 @@ async function searchBrave(topic: string): Promise<Article[]> {
 
   const data = await response.json();
   const results = data.web?.results || [];
-  console.log(`[CENTER] Brave Search returned ${results.length} results`);
+  console.log(`[CENTER] Brave returned ${results.length} total results, filtering to center sources...`);
 
   const articles: Article[] = [];
   for (const result of results) {
@@ -158,6 +152,7 @@ async function searchBrave(topic: string): Promise<Article[]> {
     });
   }
 
+  console.log(`[CENTER] Found ${articles.length} articles from center sources`);
   return articles;
 }
 
@@ -171,10 +166,9 @@ async function searchFirecrawl(topic: string): Promise<Article[]> {
     throw new Error('Firecrawl API key not configured');
   }
 
-  const siteQuery = CENTER_DOMAINS.slice(0, 5).map(d => `site:${d}`).join(' OR ');
-  const query = `${topic} (${siteQuery})`;
+  const query = `${topic} news`;
 
-  console.log(`[CENTER] Firecrawl fallback search: ${query.slice(0, 80)}...`);
+  console.log(`[CENTER] Firecrawl fallback: "${query}"`);
 
   const response = await fetch('https://api.firecrawl.dev/v1/search', {
     method: 'POST',
@@ -184,7 +178,7 @@ async function searchFirecrawl(topic: string): Promise<Article[]> {
     },
     body: JSON.stringify({
       query,
-      limit: 15,
+      limit: 30,
       lang: 'en',
       country: 'us',
       scrapeOptions: { formats: ['markdown'] },
@@ -199,7 +193,7 @@ async function searchFirecrawl(topic: string): Promise<Article[]> {
 
   const data = await response.json();
   const results = data.data || [];
-  console.log(`[CENTER] Firecrawl returned ${results.length} results`);
+  console.log(`[CENTER] Firecrawl returned ${results.length} results, filtering...`);
 
   const articles: Article[] = [];
   for (const result of results) {
@@ -245,7 +239,6 @@ Deno.serve(async (req) => {
     let articles: Article[] = [];
     let source = 'brave';
 
-    // Try Brave Search first
     try {
       articles = await searchBrave(topic);
     } catch (braveError) {
