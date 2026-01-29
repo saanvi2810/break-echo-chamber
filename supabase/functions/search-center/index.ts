@@ -37,6 +37,9 @@ const outletNames: Record<string, string> = {
   'statista.com': 'Statista',
 };
 
+// Allowed domains for center sources (strict filtering)
+const allowedDomains = new Set(Object.keys(outletNames));
+
 interface Article {
   url: string;
   title: string;
@@ -46,13 +49,23 @@ interface Article {
   label: string;
 }
 
-function detectOutlet(url: string): string {
+function getHostname(url: string): string | null {
   try {
-    const hostname = new URL(url).hostname.replace('www.', '');
-    return outletNames[hostname] || hostname.split('.')[0].charAt(0).toUpperCase() + hostname.split('.')[0].slice(1);
+    return new URL(url).hostname.replace('www.', '');
   } catch {
-    return 'Unknown';
+    return null;
   }
+}
+
+function isAllowedDomain(url: string): boolean {
+  const hostname = getHostname(url);
+  return hostname !== null && allowedDomains.has(hostname);
+}
+
+function detectOutlet(url: string): string {
+  const hostname = getHostname(url);
+  if (!hostname) return 'Unknown';
+  return outletNames[hostname] || hostname.split('.')[0].charAt(0).toUpperCase() + hostname.split('.')[0].slice(1);
 }
 
 function cleanText(text: string): string {
@@ -115,7 +128,7 @@ async function searchBrave(topic: string): Promise<Article[]> {
   const articles: Article[] = [];
   for (const result of results) {
     const url = result.url || '';
-    if (!url || !isArticlePath(url)) continue;
+    if (!url || !isArticlePath(url) || !isAllowedDomain(url)) continue;
 
     const outlet = detectOutlet(url);
     const title = result.title || `Article from ${outlet}`;
