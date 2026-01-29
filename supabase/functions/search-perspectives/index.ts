@@ -124,8 +124,9 @@ async function searchGoogleCSE(
   topic: string,
   bias: 'left' | 'center' | 'right',
   googleApiKey: string,
-  googleCseId: string
-): Promise<NewsArticle[]> {
+  googleCseId: string,
+  dateRestrict: 'w1' | 'm1'
+): Promise<{ articles: NewsArticle[]; forbidden: boolean }> {
   const domains = domainsByBias[bias];
   const topicClean = String(topic).replace(/["""]/g, '').trim();
   
@@ -139,7 +140,7 @@ async function searchGoogleCSE(
     cx: googleCseId,
     q: query,
     num: '10',
-    dateRestrict: 'w1', // Last week
+    dateRestrict, // primary: last week, fallback: last month
     safe: 'active',
   });
 
@@ -151,7 +152,8 @@ async function searchGoogleCSE(
     if (!response.ok) {
       const errorText = await response.text();
       console.error(`[${bias}] Google CSE error: ${response.status} - ${errorText.slice(0, 200)}`);
-      return [];
+      const forbidden = response.status === 403;
+      return { articles: [], forbidden };
     }
 
     const data = await response.json();
@@ -174,10 +176,10 @@ async function searchGoogleCSE(
       articles.push({ url, title, outlet, snippet, bias });
     }
 
-    return articles;
+    return { articles, forbidden: false };
   } catch (error) {
     console.error(`[${bias}] Google CSE fetch error:`, error);
-    return [];
+    return { articles: [], forbidden: false };
   }
 }
 
@@ -185,21 +187,23 @@ async function searchGoogleCSE(
 async function searchAllGoogleCSE(
   topic: string,
   googleApiKey: string,
-  googleCseId: string
-): Promise<NewsArticle[]> {
-  console.log('Using Google Custom Search API (primary)');
+  googleCseId: string,
+  dateRestrict: 'w1' | 'm1'
+): Promise<{ articles: NewsArticle[]; forbidden: boolean }> {
+  console.log(`Using Google Custom Search API (primary) dateRestrict=${dateRestrict}`);
   
   const [left, center, right] = await Promise.all([
-    searchGoogleCSE(topic, 'left', googleApiKey, googleCseId),
-    searchGoogleCSE(topic, 'center', googleApiKey, googleCseId),
-    searchGoogleCSE(topic, 'right', googleApiKey, googleCseId),
+    searchGoogleCSE(topic, 'left', googleApiKey, googleCseId, dateRestrict),
+    searchGoogleCSE(topic, 'center', googleApiKey, googleCseId, dateRestrict),
+    searchGoogleCSE(topic, 'right', googleApiKey, googleCseId, dateRestrict),
   ]);
 
-  const articles = [...left, ...center, ...right];
+  const articles = [...left.articles, ...center.articles, ...right.articles];
+  const forbidden = !!(left.forbidden && center.forbidden && right.forbidden);
   
-  console.log(`Google CSE total: left=${left.length}, center=${center.length}, right=${right.length}`);
+  console.log(`Google CSE total: left=${left.articles.length}, center=${center.articles.length}, right=${right.articles.length}`);
   
-  return articles;
+  return { articles, forbidden };
 }
 
 // ============ FIRECRAWL FALLBACK ============
@@ -207,7 +211,8 @@ async function searchAllGoogleCSE(
 async function searchFirecrawlForBias(
   topic: string,
   bias: 'left' | 'center' | 'right',
-  firecrawlKey: string
+  firecrawlKey: string,
+  tbs: 'qdr:w' | 'qdr:m'
 ): Promise<NewsArticle[]> {
   const topicClean = String(topic).replace(/["""]/g, '').trim();
   const domains = domainsByBias[bias];
@@ -217,48 +222,65 @@ async function searchFirecrawlForBias(
   console.log(`[${bias}] Firecrawl fallback search`);
 
   try {
-    const response = await fetch('https://api.firecrawl.dev/v1/search', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${firecrawlKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query,
-        limit: 8,
-        lang: 'en',
-        tbs: 'qdr:w',
-        scrapeOptions: { formats: ['markdown'] },
-      }),
-    });
+    // Small retry loop to reduce transient network flakiness (e.g. ECONNREFUSED)
+    const maxAttempts = 3;
+    let lastErrorText = '';
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`[${bias}] Firecrawl error: ${errorText.slice(0, 200)}`);
-      return [];
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const response = await fetch('https://api.firecrawl.dev/v1/search', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${firecrawlKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            query,
+            limit: 8,
+            lang: 'en',
+            tbs,
+            scrapeOptions: { formats: ['markdown'] },
+          }),
+        });
+
+        if (!response.ok) {
+          lastErrorText = await response.text();
+          console.error(`[${bias}] Firecrawl error (attempt ${attempt}/${maxAttempts}): ${lastErrorText.slice(0, 200)}`);
+        } else {
+          const data = await response.json();
+          const results = data.data || [];
+          
+          const articles: NewsArticle[] = [];
+          for (const result of results) {
+            const url = result?.url;
+            if (!url || !isArticlePath(url)) continue;
+            if (getBiasForUrl(url) !== bias) continue;
+ 
+            const outlet = detectOutletFromUrl(url);
+            let title = result.title || `Article from ${outlet}`;
+            title = title.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/[#*_`]/g, '').trim();
+            
+            let snippet = result.description || result.markdown?.slice(0, 300) || title;
+            snippet = snippet.replace(/[#*_`]/g, '').trim();
+ 
+            articles.push({ url, title, outlet, snippet, bias });
+          }
+ 
+          console.log(`[${bias}] Firecrawl found ${articles.length} articles`);
+          return articles;
+        }
+      } catch (e) {
+        lastErrorText = String(e);
+        console.error(`[${bias}] Firecrawl fetch error (attempt ${attempt}/${maxAttempts}):`, e);
+      }
+
+      // basic backoff: 300ms, 600ms
+      if (attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, 300 * attempt));
+      }
     }
 
-    const data = await response.json();
-    const results = data.data || [];
-    
-    const articles: NewsArticle[] = [];
-    for (const result of results) {
-      const url = result?.url;
-      if (!url || !isArticlePath(url)) continue;
-      if (getBiasForUrl(url) !== bias) continue;
-
-      const outlet = detectOutletFromUrl(url);
-      let title = result.title || `Article from ${outlet}`;
-      title = title.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/[#*_`]/g, '').trim();
-      
-      let snippet = result.description || result.markdown?.slice(0, 300) || title;
-      snippet = snippet.replace(/[#*_`]/g, '').trim();
-
-      articles.push({ url, title, outlet, snippet, bias });
-    }
-
-    console.log(`[${bias}] Firecrawl found ${articles.length} articles`);
-    return articles;
+    return [];
   } catch (error) {
     console.error(`[${bias}] Firecrawl fetch error:`, error);
     return [];
@@ -270,7 +292,8 @@ async function searchFirecrawlForBias(
 async function searchPerplexityForBias(
   topic: string,
   bias: 'left' | 'center' | 'right',
-  perplexityKey: string
+  perplexityKey: string,
+  recency: 'week' | 'month'
 ): Promise<NewsArticle[]> {
   const topicClean = String(topic).replace(/["""]/g, '').trim();
   const domains = domainsByBias[bias];
@@ -294,7 +317,7 @@ async function searchPerplexityForBias(
             content: `Find recent news articles about: ${query}. Return article links only.`
           }
         ],
-        search_recency_filter: 'week',
+        search_recency_filter: recency,
         temperature: 0.1,
       }),
     });
@@ -345,35 +368,69 @@ async function searchNews(
   console.log(`Searching perspectives for: ${topic}`);
 
   let articles: NewsArticle[] = [];
+  let googleForbidden = false;
+
+  const addUnique = (incoming: NewsArticle[]) => {
+    const seen = new Set(articles.map((a) => a.url));
+    for (const a of incoming) {
+      if (!a?.url) continue;
+      if (seen.has(a.url)) continue;
+      seen.add(a.url);
+      articles.push(a);
+    }
+  };
+
+  const hasBias = (b: 'left' | 'center' | 'right') => articles.some(a => a.bias === b);
+  const getMissingBiases = () => (['left', 'center', 'right'] as const).filter(b => !hasBias(b));
+
+  const tryFillMissing = async (opts: { tbs: 'qdr:w' | 'qdr:m'; recency: 'week' | 'month' }) => {
+    const missing = getMissingBiases();
+    if (missing.length === 0) return;
+
+    // Firecrawl for missing biases
+    if (firecrawlKey) {
+      console.log(`Filling missing biases with Firecrawl (${opts.tbs}): ${missing.join(', ')}`);
+      const firecrawlResults = await Promise.all(
+        missing.map(b => searchFirecrawlForBias(topic, b, firecrawlKey, opts.tbs))
+      );
+      addUnique(firecrawlResults.flat());
+    }
+
+    const stillMissing = getMissingBiases();
+    if (stillMissing.length === 0) return;
+
+    // Perplexity for still missing
+    if (perplexityKey) {
+      console.log(`Filling still-missing biases with Perplexity (${opts.recency}): ${stillMissing.join(', ')}`);
+      const perplexityResults = await Promise.all(
+        stillMissing.map(b => searchPerplexityForBias(topic, b, perplexityKey, opts.recency))
+      );
+      addUnique(perplexityResults.flat());
+    }
+  };
 
   // PRIMARY: Google Custom Search API (most reliable)
   if (googleApiKey && googleCseId) {
-    articles = await searchAllGoogleCSE(topic, googleApiKey, googleCseId);
+    const res = await searchAllGoogleCSE(topic, googleApiKey, googleCseId, 'w1');
+    googleForbidden = res.forbidden;
+    articles = res.articles;
+    if (googleForbidden) {
+      console.warn('Google CSE returned 403 for all biases; skipping further Google CSE usage for this request.');
+    }
   }
 
-  // Helper to check if we have articles for a bias
-  const hasBias = (b: 'left' | 'center' | 'right') => articles.some(a => a.bias === b);
-  const missingBiases = (['left', 'center', 'right'] as const).filter(b => !hasBias(b));
+  // First pass (week)
+  await tryFillMissing({ tbs: 'qdr:w', recency: 'week' });
 
-  // FALLBACK: Firecrawl for missing biases
-  if (missingBiases.length > 0 && firecrawlKey) {
-    console.log(`Filling missing biases with Firecrawl: ${missingBiases.join(', ')}`);
-    const firecrawlResults = await Promise.all(
-      missingBiases.map(b => searchFirecrawlForBias(topic, b, firecrawlKey))
-    );
-    articles = [...articles, ...firecrawlResults.flat()];
-  }
-
-  // Recheck missing biases
-  const stillMissing = (['left', 'center', 'right'] as const).filter(b => !hasBias(b));
-
-  // LAST RESORT: Perplexity for still-missing biases
-  if (stillMissing.length > 0 && perplexityKey) {
-    console.log(`Filling still-missing biases with Perplexity: ${stillMissing.join(', ')}`);
-    const perplexityResults = await Promise.all(
-      stillMissing.map(b => searchPerplexityForBias(topic, b, perplexityKey))
-    );
-    articles = [...articles, ...perplexityResults.flat()];
+  // If we still can't populate all 3 perspectives, expand recency window (month)
+  if (getMissingBiases().length > 0) {
+    console.log('Expanding recency window to month as fallback.');
+    // Optional: try Google again with month *only* if it wasn't forbidden.
+    if (!googleForbidden && googleApiKey && googleCseId) {
+      const res = await searchAllGoogleCSE(topic, googleApiKey, googleCseId, 'm1');
+      addUnique(res.articles);
+    }
+    await tryFillMissing({ tbs: 'qdr:m', recency: 'month' });
   }
 
   // Dedupe by URL
@@ -575,7 +632,9 @@ Deno.serve(async (req) => {
       await Promise.all(parsedContent.perspectives.map(async (perspective: any) => {
         perspective.factChecks = [];
 
-        if (!perspective.headline && !perspective.summary) return;
+        // Don't call Fact Check API when we don't actually have an article
+        if (!perspective.articleUrl) return;
+        if (!perspective.headline || perspective.headline === 'No article found') return;
 
         try {
           const query = `${topic} ${perspective.headline || ''}`.trim();
