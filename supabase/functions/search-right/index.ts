@@ -4,28 +4,51 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
+// AllSides-aligned Right & Lean Right sources
 const RIGHT_DOMAINS = [
-  'foxnews.com', 'nypost.com', 'wsj.com', 'washingtonexaminer.com', 'dailywire.com',
-  'nationalreview.com', 'breitbart.com', 'newsmax.com', 'dailycaller.com', 'thefederalist.com',
-  'washingtontimes.com', 'theblaze.com', 'foxbusiness.com', 'freebeacon.com', 'townhall.com',
+  // Major Right-Leaning
+  'foxnews.com', 'nypost.com', 'breitbart.com', 'newsmax.com', 'oann.com',
+  'dailywire.com', 'thefederalist.com', 'dailycaller.com', 'theblaze.com', 'infowars.com',
+  'townhall.com', 'pjmedia.com', 'hotair.com', 'redstate.com', 'thegatewaypundit.com',
+  // Lean Right
+  'wsj.com', 'washingtonexaminer.com', 'nationalreview.com', 'washingtontimes.com',
+  'freebeacon.com', 'foxbusiness.com', 'reason.com', 'spectator.org', 'americanthinker.com',
+  'theepochtimes.com', 'justthenews.com', 'dailymail.co.uk', 'nypost.com',
+  // Conservative think tanks / opinion
+  'heritage.org', 'aei.org', 'cato.org',
 ];
 
 const outletNames: Record<string, string> = {
   'foxnews.com': 'Fox News',
   'nypost.com': 'New York Post',
-  'wsj.com': 'Wall Street Journal',
-  'washingtonexaminer.com': 'Washington Examiner',
-  'dailywire.com': 'Daily Wire',
-  'nationalreview.com': 'National Review',
   'breitbart.com': 'Breitbart',
   'newsmax.com': 'Newsmax',
-  'dailycaller.com': 'Daily Caller',
+  'oann.com': 'OANN',
+  'dailywire.com': 'Daily Wire',
   'thefederalist.com': 'The Federalist',
-  'washingtontimes.com': 'Washington Times',
+  'dailycaller.com': 'Daily Caller',
   'theblaze.com': 'The Blaze',
-  'foxbusiness.com': 'Fox Business',
-  'freebeacon.com': 'Free Beacon',
+  'infowars.com': 'InfoWars',
   'townhall.com': 'Townhall',
+  'pjmedia.com': 'PJ Media',
+  'hotair.com': 'Hot Air',
+  'redstate.com': 'RedState',
+  'thegatewaypundit.com': 'Gateway Pundit',
+  'wsj.com': 'Wall Street Journal',
+  'washingtonexaminer.com': 'Washington Examiner',
+  'nationalreview.com': 'National Review',
+  'washingtontimes.com': 'Washington Times',
+  'freebeacon.com': 'Free Beacon',
+  'foxbusiness.com': 'Fox Business',
+  'reason.com': 'Reason',
+  'spectator.org': 'The American Spectator',
+  'americanthinker.com': 'American Thinker',
+  'theepochtimes.com': 'The Epoch Times',
+  'justthenews.com': 'Just The News',
+  'dailymail.co.uk': 'Daily Mail',
+  'heritage.org': 'Heritage Foundation',
+  'aei.org': 'AEI',
+  'cato.org': 'Cato Institute',
 };
 
 interface Article {

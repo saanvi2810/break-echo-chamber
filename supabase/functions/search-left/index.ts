@@ -4,28 +4,55 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
+// AllSides-aligned Left & Lean Left sources
 const LEFT_DOMAINS = [
-  'nytimes.com', 'washingtonpost.com', 'cnn.com', 'nbcnews.com', 'npr.org',
-  'abcnews.go.com', 'cbsnews.com', 'msnbc.com', 'theguardian.com', 'politico.com',
+  // Major Left-Leaning
+  'msnbc.com', 'cnn.com', 'nytimes.com', 'washingtonpost.com', 'theguardian.com',
   'huffpost.com', 'vox.com', 'slate.com', 'theatlantic.com', 'thedailybeast.com',
+  'motherjones.com', 'thenation.com', 'jacobin.com', 'currentaffairs.org', 'democracynow.org',
+  // Lean Left
+  'npr.org', 'nbcnews.com', 'abcnews.go.com', 'cbsnews.com', 'politico.com',
+  'newyorker.com', 'time.com', 'buzzfeednews.com', 'theintercept.com', 'propublica.org',
+  'salon.com', 'vanityfair.com', 'rollingstone.com', 'esquire.com', 'gq.com',
+  'bloomberg.com', 'businessinsider.com', 'vice.com', 'wired.com', 'arstechnica.com',
 ];
 
 const outletNames: Record<string, string> = {
+  'msnbc.com': 'MSNBC',
+  'cnn.com': 'CNN',
   'nytimes.com': 'New York Times',
   'washingtonpost.com': 'Washington Post',
-  'cnn.com': 'CNN',
-  'nbcnews.com': 'NBC News',
-  'npr.org': 'NPR',
-  'abcnews.go.com': 'ABC News',
-  'cbsnews.com': 'CBS News',
-  'msnbc.com': 'MSNBC',
   'theguardian.com': 'The Guardian',
-  'politico.com': 'Politico',
   'huffpost.com': 'HuffPost',
   'vox.com': 'Vox',
   'slate.com': 'Slate',
   'theatlantic.com': 'The Atlantic',
   'thedailybeast.com': 'The Daily Beast',
+  'motherjones.com': 'Mother Jones',
+  'thenation.com': 'The Nation',
+  'jacobin.com': 'Jacobin',
+  'currentaffairs.org': 'Current Affairs',
+  'democracynow.org': 'Democracy Now',
+  'npr.org': 'NPR',
+  'nbcnews.com': 'NBC News',
+  'abcnews.go.com': 'ABC News',
+  'cbsnews.com': 'CBS News',
+  'politico.com': 'Politico',
+  'newyorker.com': 'The New Yorker',
+  'time.com': 'TIME',
+  'buzzfeednews.com': 'BuzzFeed News',
+  'theintercept.com': 'The Intercept',
+  'propublica.org': 'ProPublica',
+  'salon.com': 'Salon',
+  'vanityfair.com': 'Vanity Fair',
+  'rollingstone.com': 'Rolling Stone',
+  'esquire.com': 'Esquire',
+  'gq.com': 'GQ',
+  'bloomberg.com': 'Bloomberg',
+  'businessinsider.com': 'Business Insider',
+  'vice.com': 'Vice',
+  'wired.com': 'Wired',
+  'arstechnica.com': 'Ars Technica',
 };
 
 interface Article {
