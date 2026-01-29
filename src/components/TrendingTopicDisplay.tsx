@@ -1,4 +1,6 @@
-import { TrendingUp, Calendar, Hash } from "lucide-react";
+import { useState } from "react";
+import { TrendingUp, Calendar, Hash, ChevronDown, ChevronUp } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import PerspectiveCard from "./PerspectiveCard";
 import type { TopicData, Perspective } from "@/lib/api/perspectives";
 
@@ -7,7 +9,110 @@ interface TrendingTopicDisplayProps {
   perspectives: Perspective[];
 }
 
+const INITIAL_SHOW_COUNT = 3;
+
+const perspectiveConfig = {
+  left: {
+    title: "Left-Leaning",
+    color: "text-perspective-left",
+    bgColor: "bg-perspective-left/10",
+    borderColor: "border-perspective-left",
+  },
+  center: {
+    title: "Center",
+    color: "text-perspective-center",
+    bgColor: "bg-perspective-center/10",
+    borderColor: "border-perspective-center",
+  },
+  right: {
+    title: "Right-Leaning",
+    color: "text-perspective-right",
+    bgColor: "bg-perspective-right/10",
+    borderColor: "border-perspective-right",
+  },
+};
+
 const TrendingTopicDisplay = ({ topic, perspectives }: TrendingTopicDisplayProps) => {
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
+    left: false,
+    center: false,
+    right: false,
+  });
+
+  // Group perspectives by type
+  const groupedPerspectives = perspectives.reduce((acc, p) => {
+    if (!acc[p.perspective]) {
+      acc[p.perspective] = [];
+    }
+    acc[p.perspective].push(p);
+    return acc;
+  }, {} as Record<string, Perspective[]>);
+
+  const toggleSection = (section: string) => {
+    setExpandedSections(prev => ({
+      ...prev,
+      [section]: !prev[section],
+    }));
+  };
+
+  const renderPerspectiveSection = (type: 'left' | 'center' | 'right', index: number) => {
+    const articles = groupedPerspectives[type] || [];
+    const config = perspectiveConfig[type];
+    const isExpanded = expandedSections[type];
+    const displayedArticles = isExpanded ? articles : articles.slice(0, INITIAL_SHOW_COUNT);
+    const hasMore = articles.length > INITIAL_SHOW_COUNT;
+
+    if (articles.length === 0) return null;
+
+    return (
+      <div 
+        key={type} 
+        className="animate-fade-in"
+        style={{ animationDelay: `${0.2 + index * 0.1}s` }}
+      >
+        <div className={`flex items-center gap-2 mb-4 pb-2 border-b-2 ${config.borderColor}`}>
+          <h3 className={`font-serif text-xl font-bold ${config.color}`}>
+            {config.title}
+          </h3>
+          <span className={`text-xs px-2 py-0.5 rounded-full ${config.bgColor} ${config.color}`}>
+            {articles.length} article{articles.length !== 1 ? 's' : ''}
+          </span>
+        </div>
+
+        <div className="space-y-4">
+          {displayedArticles.map((perspective, idx) => (
+            <PerspectiveCard
+              key={`${type}-${perspective.articleUrl}-${idx}`}
+              {...perspective}
+              animationDelay={`${0.3 + idx * 0.05}s`}
+            />
+          ))}
+        </div>
+
+        {hasMore && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => toggleSection(type)}
+            className={`mt-4 w-full ${config.color} hover:${config.bgColor}`}
+          >
+            {isExpanded ? (
+              <>
+                <ChevronUp className="w-4 h-4 mr-1" />
+                Show less
+              </>
+            ) : (
+              <>
+                <ChevronDown className="w-4 h-4 mr-1" />
+                Show {articles.length - INITIAL_SHOW_COUNT} more
+              </>
+            )}
+          </Button>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div>
       {/* Topic Header */}
@@ -47,15 +152,11 @@ const TrendingTopicDisplay = ({ topic, perspectives }: TrendingTopicDisplayProps
         </div>
       </div>
 
-      {/* Perspective Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 max-w-6xl mx-auto">
-        {perspectives.map((perspective, index) => (
-          <PerspectiveCard
-            key={`${perspective.perspective}-${perspective.articleUrl}-${index}`}
-            {...perspective}
-            animationDelay={`${0.3 + index * 0.1}s`}
-          />
-        ))}
+      {/* Perspective Sections - 3 columns */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 max-w-7xl mx-auto">
+        {(['left', 'center', 'right'] as const).map((type, index) => 
+          renderPerspectiveSection(type, index)
+        )}
       </div>
     </div>
   );
