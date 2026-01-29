@@ -4,16 +4,8 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-// AllSides-aligned Center sources
-const CENTER_DOMAINS = [
-  'reuters.com', 'apnews.com', 'bbc.com', 'c-span.org', 'allsides.com',
-  'thehill.com', 'axios.com', 'realclearpolitics.com', 'thefactcheck.org',
-  'csmonitor.com', 'pbs.org', 'usatoday.com', 'newsweek.com', 'forbes.com',
-  'marketwatch.com', 'npr.org', 'abcnews.go.com', 'cbsnews.com',
-  'politifact.com', 'snopes.com', 'factcheck.org',
-  'aljazeera.com', 'france24.com', 'dw.com', 'scmp.com',
-  'economist.com', 'ft.com', 'barrons.com',
-];
+// Brave Goggles ID for center sources
+const GOGGLES_ID = 'https://raw.githubusercontent.com/saanvi2810/break-echo-chamber/main/public/goggles/center-sources.goggle';
 
 const outletNames: Record<string, string> = {
   'reuters.com': 'Reuters',
@@ -24,7 +16,6 @@ const outletNames: Record<string, string> = {
   'thehill.com': 'The Hill',
   'axios.com': 'Axios',
   'realclearpolitics.com': 'RealClearPolitics',
-  'thefactcheck.org': 'FactCheck.org',
   'csmonitor.com': 'Christian Science Monitor',
   'pbs.org': 'PBS',
   'usatoday.com': 'USA Today',
@@ -34,16 +25,16 @@ const outletNames: Record<string, string> = {
   'npr.org': 'NPR',
   'abcnews.go.com': 'ABC News',
   'cbsnews.com': 'CBS News',
+  'nbcnews.com': 'NBC News',
   'politifact.com': 'PolitiFact',
   'snopes.com': 'Snopes',
   'factcheck.org': 'FactCheck.org',
-  'aljazeera.com': 'Al Jazeera',
-  'france24.com': 'France 24',
-  'dw.com': 'DW News',
-  'scmp.com': 'South China Morning Post',
   'economist.com': 'The Economist',
-  'ft.com': 'Financial Times',
-  'barrons.com': "Barron's",
+  'bloomberg.com': 'Bloomberg',
+  'theweek.com': 'The Week',
+  'newsnation.com': 'NewsNation',
+  'time.com': 'TIME',
+  'statista.com': 'Statista',
 };
 
 interface Article {
@@ -53,28 +44,6 @@ interface Article {
   snippet: string;
   perspective: 'left' | 'center' | 'right';
   label: string;
-}
-
-function isAllowedDomain(url: string, domains: string[]): boolean {
-  try {
-    const host = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
-    return domains.some((d) => host === d.toLowerCase().replace(/^www\./, '') || host.endsWith('.' + d.toLowerCase().replace(/^www\./, '')));
-  } catch {
-    return false;
-  }
-}
-
-function isArticlePath(url: string): boolean {
-  try {
-    const u = new URL(url);
-    const path = u.pathname.toLowerCase();
-    if (path === '/' || path === '') return false;
-    if (path.startsWith('/people') || path.startsWith('/author')) return false;
-    if (path.includes('/tag/') || path.includes('/category/')) return false;
-    return path.length > 10;
-  } catch {
-    return false;
-  }
 }
 
 function detectOutlet(url: string): string {
@@ -90,8 +59,21 @@ function cleanText(text: string): string {
   return (text || '').replace(/<[^>]+>/g, '').replace(/&[a-z]+;/gi, ' ').replace(/\s+/g, ' ').trim();
 }
 
+function isArticlePath(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const path = u.pathname.toLowerCase();
+    if (path === '/' || path === '') return false;
+    if (path.startsWith('/people') || path.startsWith('/author')) return false;
+    if (path.includes('/tag/') || path.includes('/category/')) return false;
+    return path.length > 10;
+  } catch {
+    return false;
+  }
+}
+
 // ─────────────────────────────────────────────────────────────
-// Brave Search API - search broadly, filter to center sources
+// Brave Search API with Goggles
 // ─────────────────────────────────────────────────────────────
 
 async function searchBrave(topic: string): Promise<Article[]> {
@@ -101,18 +83,15 @@ async function searchBrave(topic: string): Promise<Article[]> {
   }
 
   const topicClean = String(topic).replace(/["""]/g, '').trim();
-  
-  // Search broadly for news, then filter results to center sources
-  const fullQuery = `${topicClean} news`;
-  
-  console.log(`[CENTER] Searching Brave broadly: "${fullQuery}"`);
+
+  console.log(`[CENTER] Searching with Goggles: "${topicClean}"`);
 
   const params = new URLSearchParams({
-    q: fullQuery,
-    // Brave's API can be picky about params; keep this conservative.
-    count: '20',
+    q: topicClean,
+    count: '10',
     freshness: 'pw',
     text_decorations: 'false',
+    goggles_id: GOGGLES_ID,
   });
 
   const response = await fetch(`https://api.search.brave.com/res/v1/web/search?${params}`, {
@@ -131,13 +110,12 @@ async function searchBrave(topic: string): Promise<Article[]> {
 
   const data = await response.json();
   const results = data.web?.results || [];
-  console.log(`[CENTER] Brave returned ${results.length} total results, filtering to center sources...`);
+  console.log(`[CENTER] Brave Goggles returned ${results.length} results`);
 
   const articles: Article[] = [];
   for (const result of results) {
     const url = result.url || '';
-
-    if (!url || !isAllowedDomain(url, CENTER_DOMAINS) || !isArticlePath(url)) continue;
+    if (!url || !isArticlePath(url)) continue;
 
     const outlet = detectOutlet(url);
     const title = result.title || `Article from ${outlet}`;
@@ -153,69 +131,7 @@ async function searchBrave(topic: string): Promise<Article[]> {
     });
   }
 
-  console.log(`[CENTER] Found ${articles.length} articles from center sources`);
-  return articles;
-}
-
-// ─────────────────────────────────────────────────────────────
-// Firecrawl fallback
-// ─────────────────────────────────────────────────────────────
-
-async function searchFirecrawl(topic: string): Promise<Article[]> {
-  const apiKey = Deno.env.get('FIRECRAWL_API_KEY');
-  if (!apiKey) {
-    throw new Error('Firecrawl API key not configured');
-  }
-
-  const query = `${topic} news`;
-
-  console.log(`[CENTER] Firecrawl fallback: "${query}"`);
-
-  const response = await fetch('https://api.firecrawl.dev/v1/search', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      query,
-      limit: 30,
-      lang: 'en',
-      country: 'us',
-      scrapeOptions: { formats: ['markdown'] },
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error(`[CENTER] Firecrawl error: ${response.status} - ${errorText.slice(0, 300)}`);
-    throw new Error(`Firecrawl ${response.status}`);
-  }
-
-  const data = await response.json();
-  const results = data.data || [];
-  console.log(`[CENTER] Firecrawl returned ${results.length} results, filtering...`);
-
-  const articles: Article[] = [];
-  for (const result of results) {
-    const url = result.url || '';
-
-    if (!url || !isAllowedDomain(url, CENTER_DOMAINS) || !isArticlePath(url)) continue;
-
-    const outlet = detectOutlet(url);
-    const title = result.title || `Article from ${outlet}`;
-    const snippet = result.description || result.markdown?.slice(0, 200) || title;
-
-    articles.push({
-      url,
-      title: cleanText(title),
-      outlet,
-      snippet: cleanText(snippet),
-      perspective: 'center',
-      label: 'Center Source',
-    });
-  }
-
+  console.log(`[CENTER] Found ${articles.length} articles`);
   return articles;
 }
 
@@ -237,24 +153,11 @@ Deno.serve(async (req) => {
       });
     }
 
-    let articles: Article[] = [];
-    let source = 'brave';
+    const articles = await searchBrave(topic);
 
-    try {
-      articles = await searchBrave(topic);
-    } catch (braveError) {
-      console.warn(`[CENTER] Brave failed, trying Firecrawl fallback: ${braveError}`);
-      source = 'firecrawl';
-      try {
-        articles = await searchFirecrawl(topic);
-      } catch (firecrawlError) {
-        console.error(`[CENTER] Firecrawl fallback also failed: ${firecrawlError}`);
-      }
-    }
+    console.log(`[CENTER] Final result: ${articles.length} articles`);
 
-    console.log(`[CENTER] Final result: ${articles.length} articles from ${source}`);
-
-    return new Response(JSON.stringify({ success: true, articles, source }), {
+    return new Response(JSON.stringify({ success: true, articles, source: 'brave-goggles' }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
 
