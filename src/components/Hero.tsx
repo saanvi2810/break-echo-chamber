@@ -1,5 +1,4 @@
 import { ArrowDown, Eye, Shield, Sparkles } from "lucide-react";
-import VertexSearchWidget from "./VertexSearchWidget";
 
 const Hero = () => {
   return (
@@ -29,11 +28,6 @@ const Hero = () => {
             See how the same news is covered across the political spectrum. 
             Compare perspectives, verify claims, and form your own informed opinion.
           </p>
-
-          {/* Vertex AI Search Widget */}
-          <div className="mb-10 animate-fade-in" style={{ animationDelay: "0.25s" }}>
-            <VertexSearchWidget />
-          </div>
           
           <div className="flex flex-wrap justify-center gap-6 mb-12 animate-fade-in" style={{ animationDelay: "0.3s" }}>
             <div className="flex items-center gap-2 text-sm">
