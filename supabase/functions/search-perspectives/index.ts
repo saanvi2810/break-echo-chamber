@@ -360,15 +360,12 @@ async function searchPerplexityForBias(
 
 async function searchNews(
   topic: string,
-  googleApiKey: string | undefined,
-  googleCseId: string | undefined,
   firecrawlKey: string | undefined,
   perplexityKey: string | undefined
 ): Promise<NewsArticle[]> {
   console.log(`Searching perspectives for: ${topic}`);
 
   let articles: NewsArticle[] = [];
-  let googleForbidden = false;
 
   const addUnique = (incoming: NewsArticle[]) => {
     const seen = new Set(articles.map((a) => a.url));
@@ -387,9 +384,9 @@ async function searchNews(
     const missing = getMissingBiases();
     if (missing.length === 0) return;
 
-    // Firecrawl for missing biases
+    // Firecrawl for missing biases (PRIMARY)
     if (firecrawlKey) {
-      console.log(`Filling missing biases with Firecrawl (${opts.tbs}): ${missing.join(', ')}`);
+      console.log(`Filling biases with Firecrawl (${opts.tbs}): ${missing.join(', ')}`);
       const firecrawlResults = await Promise.all(
         missing.map(b => searchFirecrawlForBias(topic, b, firecrawlKey, opts.tbs))
       );
@@ -399,7 +396,7 @@ async function searchNews(
     const stillMissing = getMissingBiases();
     if (stillMissing.length === 0) return;
 
-    // Perplexity for still missing
+    // Perplexity for still missing (FALLBACK)
     if (perplexityKey) {
       console.log(`Filling still-missing biases with Perplexity (${opts.recency}): ${stillMissing.join(', ')}`);
       const perplexityResults = await Promise.all(
@@ -409,27 +406,12 @@ async function searchNews(
     }
   };
 
-  // PRIMARY: Google Custom Search API (most reliable)
-  if (googleApiKey && googleCseId) {
-    const res = await searchAllGoogleCSE(topic, googleApiKey, googleCseId, 'w1');
-    googleForbidden = res.forbidden;
-    articles = res.articles;
-    if (googleForbidden) {
-      console.warn('Google CSE returned 403 for all biases; skipping further Google CSE usage for this request.');
-    }
-  }
-
   // First pass (week)
   await tryFillMissing({ tbs: 'qdr:w', recency: 'week' });
 
   // If we still can't populate all 3 perspectives, expand recency window (month)
   if (getMissingBiases().length > 0) {
     console.log('Expanding recency window to month as fallback.');
-    // Optional: try Google again with month *only* if it wasn't forbidden.
-    if (!googleForbidden && googleApiKey && googleCseId) {
-      const res = await searchAllGoogleCSE(topic, googleApiKey, googleCseId, 'm1');
-      addUnique(res.articles);
-    }
     await tryFillMissing({ tbs: 'qdr:m', recency: 'month' });
   }
 
@@ -520,11 +502,10 @@ Deno.serve(async (req) => {
     }
 
     console.log('Searching perspectives for topic:', topic);
-    console.log('Google CSE available:', !!(googleApiKey && googleCseId));
     console.log('Firecrawl available:', !!firecrawlKey);
     console.log('Perplexity available:', !!perplexityKey);
 
-    const realArticles = await searchNews(topic, googleApiKey, googleCseId, firecrawlKey, perplexityKey);
+    const realArticles = await searchNews(topic, firecrawlKey, perplexityKey);
 
     if (realArticles.length === 0) {
       return new Response(
